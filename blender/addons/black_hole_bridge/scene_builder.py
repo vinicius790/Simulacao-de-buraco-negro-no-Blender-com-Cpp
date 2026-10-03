@@ -14,8 +14,10 @@ from . import materials
 
 try:
     import bpy
+    from mathutils import Vector
 except ImportError:
     bpy = None  # type: ignore
+    Vector = None  # type: ignore
 
 
 def _ensure_collection(name: str, parent=None):
@@ -70,6 +72,32 @@ def _ensure_fill_light(collection):
     obj.location = C.cpp_to_blender((8.0, 6.0, 8.0))
     obj["bh_role"] = "fill_light"
     return obj
+
+
+def _hide_foreign_objects(scene, radius: float):
+    """Hide non-BH objects that would sit inside / occlude the black-hole scene.
+
+    Blender's default file has a 2 m 'Cube' at the origin, which encloses the
+    rs = 1 horizon and renders as a lit grey box, plus a 1000 W 'Light'. Meshes
+    whose bounding sphere comes within ``radius`` of the origin, and non-BH
+    lights, are hidden from render and viewport (not deleted). Returns names.
+    """
+    hidden = []
+    for obj in scene.objects:
+        if obj.get("bh_role") or obj.type in {"CAMERA", "EMPTY"}:
+            continue
+        if obj.type == "LIGHT":
+            near = True
+        else:
+            corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+            centre = sum(corners, Vector()) / 8.0
+            extent = max((c - centre).length for c in corners)
+            near = centre.length - extent < radius
+        if near and not obj.hide_render:
+            obj.hide_render = True
+            obj.hide_set(True)
+            hidden.append(obj.name)
+    return hidden
 
 
 def build_full_scene(context=None):
@@ -127,11 +155,14 @@ def build_full_scene(context=None):
         s.disk_outer_factor,
         s.disk_thickness_m / C.SAG_A_RS_M,
     )
+    hidden = _hide_foreign_objects(scene, 1.5 * max(s.disk_outer_factor, radius))
     note = (
         "Meshes in geometric units (rs=1, Z-up; C++ Y-up mapped by cpp_to_blender). "
         f"Physical rs ≈ {C.rs_from_mass(s.mass_kg):.4e} m. "
         f"View transform: {view_transform} (OpenGL colour parity)."
     )
+    if hidden:
+        note += f" Hidden non-BH objects (render+viewport): {', '.join(hidden)}."
     if inside:
         note += (
             " WARNING: camera is inside the accretion disk (C++ default view) — "
@@ -143,5 +174,6 @@ def build_full_scene(context=None):
         "radius_geo": radius,
         "rs_geo": rs,
         "camera_inside_disk": inside,
+        "hidden_objects": hidden,
         "note": note,
     }

@@ -3,7 +3,7 @@ schema_version = "1.0.0"
 id = "black_hole_bridge"
 version = "0.8.0"
 name = "Black Hole Bridge"
-tagline = "Style-locked Sag A* Blender frontend + render bridge for the C++ black_hole simulator"
+tagline = "Sag A* scene, animation and render bridge for the C++ simulator"
 maintainer = "black_hole package"
 type = "add-on"
 
@@ -12,4 +12,4 @@ blender_version_min = "4.0.0"
 license = ["SPDX:MIT"]
 
 [permissions]
-files = "Export/import scene_params JSON; run bh_render_cpu and load its PNG/BMP frames"
+files = "Scene JSON export/import and bh_render_cpu PNG frames"

@@ -252,6 +252,20 @@ def check_bridge_sync(rb, C) -> None:
            2 * math.atan(math.tan(math.radians(40.0)) / 2.0), what="horizontal fit")
 
 
+def check_seamless_paths(co) -> None:
+    """Periodic azimuth sampled at k/N: the frame after the last equals frame 0."""
+    n = 48
+    fn = co.make_path_fn("TURNTABLE", "LINEAR", 5.0, 0.3, 1.2, 9.0, 0.4, 2.7)
+    last = fn((n - 1) / (n - 1), (n - 1) / n)
+    _close(last[1] + 2 * math.pi / n - 2 * math.pi, 0.3, what="turntable loop closes without a duplicate frame")
+    first = fn(0.0, 0.0)
+    assert abs(last[1] - first[1] - 2 * math.pi) > 1e-6, "last frame is not a repeat of the first"
+    spiral = co.make_path_fn("SPIRAL", "LINEAR", 5.0, 0.0, 1.2, 9.0, 0.4, 2.7)
+    _close(spiral(1.0, (n - 1) / n)[2], 2.7, what="spiral elevation reaches its end value")
+    # Legacy single-argument behaviour kept: t_azimuth defaults to t.
+    _close(fn(0.5)[1], 0.3 + math.pi, what="t_azimuth defaults to t")
+
+
 def check_render_bridge(rb) -> None:
     argv = rb.build_render_command(
         "/opt/bh/bh_render_cpu", "/tmp/scene.json", "/tmp/out/frame.png",
@@ -392,6 +406,14 @@ def main() -> int:
     assert black_hole_bridge.bl_info["version"] == (0, 8, 0)
     manifest = (root / "blender/addons/black_hole_bridge/blender_manifest.toml").read_text("utf-8")
     assert re.search(r'^version\s*=\s*"0\.8\.0"', manifest, re.M), "manifest version"
+    # Blender 4.2+ extension validation: tagline and permission reasons ≤ 64
+    # chars, ending with an alphanumeric character or a closing bracket.
+    for key in ("tagline", "files", "network", "clipboard", "camera", "microphone"):
+        m = re.search(rf'^{key}\s*=\s*"([^"]*)"', manifest, re.M)
+        if m:
+            text = m.group(1)
+            assert len(text) <= 64, f"manifest {key} longer than 64 chars ({len(text)})"
+            assert text[-1].isalnum() or text[-1] in ")]}", f"manifest {key} must not end with punctuation"
 
     check_constants(root, C)
     check_formulas(C)
@@ -399,6 +421,7 @@ def main() -> int:
     check_json(json_io, C)
     check_render_bridge(render_bridge)
     check_bridge_sync(render_bridge, C)
+    check_seamless_paths(camera_orbit)
     check_anim(camera_orbit)
     check_zips(root)
 

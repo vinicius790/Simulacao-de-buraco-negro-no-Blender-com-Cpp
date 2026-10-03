@@ -501,6 +501,14 @@ bool scene_params_from_json(const std::string& json_text, SceneParams& out, std:
         err = "unexpected schema id: " + tmp.schema;
         return false;
     }
+    if (!(std::isfinite(tmp.r_s_m) && tmp.r_s_m > 0.0)) {
+        err = "invalid black_hole.r_s_m (must be finite and > 0)";
+        return false;
+    }
+    if (!(std::isfinite(tmp.mass_kg) && tmp.mass_kg > 0.0)) {
+        err = "invalid black_hole.mass_kg (must be finite and > 0)";
+        return false;
+    }
     if (!(std::isfinite(tmp.camera.radius_m) && tmp.camera.radius_m > 0.0)) {
         err = "invalid camera.radius_m";
         return false;

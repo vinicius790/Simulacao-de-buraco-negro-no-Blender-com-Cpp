@@ -37,6 +37,9 @@ POSES = [
     # Half the mass, default objects kept (as the Blender exporter writes it):
     # the black-hole marker must be skipped on both sides.
     ("half_mass", 0.0, 1.25, 6.34194e10, {"black_hole": {"mass_kg": 4.27e36, "r_s_m": 6.345e9}}),
+    # "objects": [] must remove the default stars on the GPU too (az ≈ π puts
+    # the default red/yellow stars behind the hole, where they would show).
+    ("no_objects_az_pi", 3.14159265, 1.40, 2.2842e11, {"disk": {"inner_factor_rs": 3.0, "outer_factor_rs": 12.0}, "objects": []}),
 ]
 
 
@@ -75,7 +78,10 @@ def main() -> int:
                 "camera": {"radius_m": radius, "azimuth_rad": az, "elevation_rad": el, "fov_y_deg": 60.0},
             }
             for key, value in extra.items():
-                doc.setdefault(key, {}).update(value)
+                if isinstance(value, dict):
+                    doc.setdefault(key, {}).update(value)
+                else:
+                    doc[key] = value
             scene.write_text(json.dumps(doc))
             for mode_flag, cpu_mode in (("--scientific", "legacy"), ("--relativistic", "relativistic")):
                 gpu_png = tmpd / f"{label}{mode_flag}_gpu.png"

@@ -12,7 +12,7 @@ azimuth sweep (TURNTABLE, frame 0 = given azimuth).
 from __future__ import annotations
 
 import math
-from typing import Callable, Tuple
+from typing import Callable, Optional, Tuple
 
 from . import constants as C
 
@@ -25,7 +25,8 @@ except ImportError:
     Euler = None  # type: ignore
 
 PathSample = Tuple[float, float, float]
-PathFn = Callable[[float], PathSample]
+# fn(t, t_azimuth) → (radius, azimuth, elevation); t_azimuth drives the periodic sweep.
+PathFn = Callable[[float, Optional[float]], PathSample]
 
 
 # --------------------------------------------------------------------------- #
@@ -53,8 +54,14 @@ def camera_path_sample(
     radius_end: float,
     elev_start: float,
     elev_end: float,
+    t_azimuth: float | None = None,
 ) -> PathSample:
     """Return (radius, azimuth, elevation) at normalised time t for a preset.
+
+    ``t_azimuth`` (defaults to ``t``) drives the PERIODIC azimuth sweep
+    separately: a seamless loop of N frames samples it as k/N (frame N ≡
+    frame 0, like bh_render_cpu --frames) while elevation / radius use k/(N−1)
+    so they reach their end values exactly.
 
     TURNTABLE       azimuth sweeps +2π from ``azimuth``; radius/elevation fixed.
     ELEVATION_SWEEP elevation goes elev_start → elev_end; azimuth/radius fixed.
@@ -63,15 +70,16 @@ def camera_path_sample(
     Elevation is clamped to (0.01, π−0.01) like Camera::position().
     """
     t = max(0.0, min(1.0, float(t)))
+    ta = t if t_azimuth is None else max(0.0, min(1.0, float(t_azimuth)))
     two_pi = 2.0 * math.pi
     if mode == "TURNTABLE":
-        out = (radius, azimuth + two_pi * t, elevation)
+        out = (radius, azimuth + two_pi * ta, elevation)
     elif mode == "ELEVATION_SWEEP":
         out = (radius, azimuth, elev_start + t * (elev_end - elev_start))
     elif mode == "DOLLY":
         out = (radius + t * (radius_end - radius), azimuth, elevation)
     elif mode == "SPIRAL":
-        out = (radius, azimuth + two_pi * t, elev_start + t * (elev_end - elev_start))
+        out = (radius, azimuth + two_pi * ta, elev_start + t * (elev_end - elev_start))
     else:
         raise ValueError(f"unknown anim mode {mode!r}; expected one of {C.ANIM_MODES}")
     r, az, el = out
@@ -93,10 +101,11 @@ def make_path_fn(
     camera_path_sample(mode, 0.0, radius, azimuth, elevation, radius_end, elev_start, elev_end)
     ease_t(0.0, easing)
 
-    def fn(t: float) -> PathSample:
+    def fn(t: float, t_azimuth: float | None = None) -> PathSample:
         return camera_path_sample(
             mode, ease_t(t, easing), radius, azimuth, elevation,
             radius_end, elev_start, elev_end,
+            None if t_azimuth is None else ease_t(t_azimuth, easing),
         )
 
     return fn
@@ -226,7 +235,10 @@ def bake_camera_path(
     duration_s: float = C.ANIM_DURATION_S,
     scene=None,
 ) -> int:
-    """Keyframe ``cam.location`` along ``frames_params_fn(t)`` for t ∈ [0, 1].
+    """Keyframe ``cam.location`` along ``frames_params_fn(t, t_azimuth)``:
+    t = k/(N−1) ∈ [0, 1] (end values reached exactly) and t_azimuth = k/N
+    (periodic azimuth: the last frame is NOT a repeat of the first, so a
+    looping turntable has no hitch — same sampling as bh_render_cpu --frames).
 
     ``frames_params_fn`` returns (radius, azimuth, elevation) in geo units;
     the camera keeps aiming at the origin (Track To). Linear interpolation
@@ -242,8 +254,9 @@ def bake_camera_path(
     _clear_location_fcurves(cam)
 
     for frame in range(1, n_frames + 1):
-        t = (frame - 1) / (n_frames - 1)
-        radius, az, el = frames_params_fn(t)
+        t = (frame - 1) / (n_frames - 1)       # endpoint-inclusive (elevation, radius)
+        t_az = (frame - 1) / n_frames          # periodic azimuth: seamless loop
+        radius, az, el = frames_params_fn(t, t_az)
         place_camera(cam, radius, az, el)
         cam.keyframe_insert(data_path="location", frame=frame)
         cam["bh_azimuth"] = az
@@ -276,7 +289,8 @@ def bake_orbit_animation(
     thin wrapper over :func:`bake_camera_path`.
     """
 
-    def fn(t: float) -> PathSample:
-        return (radius, azimuth_start + t * (azimuth_end - azimuth_start), elevation)
+    def fn(t: float, t_azimuth: float | None = None) -> PathSample:
+        ta = t if t_azimuth is None else t_azimuth
+        return (radius, azimuth_start + ta * (azimuth_end - azimuth_start), elevation)
 
     return bake_camera_path(cam, fn, fps=fps, duration_s=duration_s, scene=scene)

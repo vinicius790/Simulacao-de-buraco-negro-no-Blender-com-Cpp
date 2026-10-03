@@ -156,6 +156,14 @@ if(BLACK_HOLE_BUILD_GL)
                     --bin-dir $<TARGET_FILE_DIR:BlackHole3D>
             )
             set_tests_properties(gpu_cpu_agreement PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900)
+            add_test(
+                NAME legacy_golden
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_legacy_golden.py
+                    --root ${CMAKE_CURRENT_SOURCE_DIR}
+                    --bin-dir $<TARGET_FILE_DIR:BlackHole3D>
+            )
+            set_tests_properties(legacy_golden PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 1800)
         endif()
     endif()
 

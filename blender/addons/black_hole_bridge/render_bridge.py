@@ -249,8 +249,23 @@ def _configure_sequence(image, image_user, files: List[str], scene) -> int:
     return n
 
 
-def _load_image(path: str):
+def _load_image(path: str, scene=None):
+    """Load (or re-read) a bh_render_cpu frame.
+
+    * ``reload()``: re-rendering to the same path must show the NEW pixels
+      (``check_existing=True`` alone returns the stale datablock).
+    * Under the add-on's "Raw" view transform the PNG must be read as
+      Non-Color so its 8-bit values reach the render unchanged (as sRGB they
+      would be linearised and come out much darker).
+    """
     image = bpy.data.images.load(path, check_existing=True)
+    image.reload()
+    scene = scene if scene is not None else bpy.context.scene
+    raw = scene is not None and scene.view_settings.view_transform == "Raw"
+    try:
+        image.colorspace_settings.name = "Non-Color" if raw else "sRGB"
+    except TypeError:
+        pass  # colour-management config without these names: keep default
     image["bh_role"] = "cpp_render"
     return image
 
@@ -272,8 +287,8 @@ def import_render_background(context, path: str) -> Tuple[object, int]:
     """
     cam = _ensure_camera(context)
     files = find_sequence_files(path)
-    image = _load_image(files[0])
     scene = context.scene
+    image = _load_image(files[0], scene)
     scene.render.resolution_x, scene.render.resolution_y = image.size[0], image.size[1]
 
     cam.data.show_background_images = True
@@ -319,8 +334,8 @@ def import_render_as_plane(context, path: str, depth: float = 10.0) -> Tuple[obj
     sized to fill the camera frame (vertical FOV × image aspect)."""
     cam = _ensure_camera(context)
     files = find_sequence_files(path)
-    image = _load_image(files[0])
     scene = context.scene
+    image = _load_image(files[0], scene)
     w_px, h_px = image.size[0], image.size[1]
     aspect = (w_px / h_px) if h_px else 4.0 / 3.0
     scene.render.resolution_x, scene.render.resolution_y = w_px, h_px
@@ -394,7 +409,19 @@ class BH_OT_run_cpu_render(Operator):
         json_io.write_json(scene_json, json_io.params_from_settings(s))
 
         scene = context.scene
-        cam = scene.camera if scene.camera is not None else _ensure_camera(context)
+        # Always render from BH_OrbitCamera — the camera that receives the
+        # background afterwards. A freshly created rig sits at the origin:
+        # place it from the panel parameters first.
+        cam = _ensure_camera(context)
+        if cam.matrix_world.translation.length < 1e-9:
+            camera_orbit.align_camera_from_params(
+                cam,
+                radius=camera_orbit.geo_radius_from_settings(s),
+                azimuth=float(s.camera_azimuth),
+                elevation=float(s.camera_elevation),
+                fov_y_deg=float(s.camera_fov_y_deg),
+            )
+            context.view_layer.update()
         aspect = int(s.render_width) / max(1, int(s.render_height))
         n_frames = int(s.render_frames)
         outs = expected_frame_paths(str(out_path), n_frames)
@@ -409,7 +436,12 @@ class BH_OT_run_cpu_render(Operator):
             for frame, out_k in zip(frames, outs):
                 scene.frame_set(frame)
                 pos_cpp = C.blender_to_cpp(tuple(cam.matrix_world.translation))
-                radius, azimuth, elevation = orbit_params_from_cpp_position(pos_cpp)
+                try:
+                    radius, azimuth, elevation = orbit_params_from_cpp_position(pos_cpp)
+                except ValueError:
+                    self.report({"ERROR"}, f"{cam.name} is at the black-hole centre at frame {frame}; "
+                                           "use Align Camera or Build Full Scene first")
+                    return {"CANCELLED"}
                 fov_y = camera_fov_y(cam.data.sensor_fit, cam.data.angle, cam.data.angle_y, aspect)
                 argv = build_render_command(
                     renderer_path=renderer,

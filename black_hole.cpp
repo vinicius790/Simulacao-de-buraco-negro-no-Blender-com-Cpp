@@ -4,6 +4,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
+#include <cctype>
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -48,6 +49,21 @@ struct RuntimeConfig {
     bh::SceneParams scene = bh::make_default_scene_params();
 };
 RuntimeConfig g_config;
+std::string g_exePath;  // argv[0], used to find shaders next to the executable
+
+// The scientific shader ships next to the binary (CMake copies it) and under
+// shaders/ in the repository. Try cwd, then shaders/, then the executable's
+// directory, so `build/gl/BlackHole3D --scientific` also works from the repo root.
+static std::string resolveScientificShader() {
+    const std::string name = "geodesic_scientific.comp";
+    std::vector<std::string> candidates = {name, "shaders/" + name};
+    const std::size_t slash = g_exePath.find_last_of("/\\");
+    if (slash != std::string::npos) candidates.push_back(g_exePath.substr(0, slash + 1) + name);
+    for (const std::string& c : candidates) {
+        if (std::ifstream(c).good()) return c;
+    }
+    return name;  // CreateComputeProgram reports the failure
+}
 
 struct alignas(16) SciParamsUBOData {
     std::int32_t colorMode;
@@ -282,10 +298,11 @@ struct Engine {
             exit(EXIT_FAILURE);
         }
         cout << "OpenGL " << glGetString(GL_VERSION) << "\n";
+        cout << "Renderer " << glGetString(GL_RENDERER) << "\n";
         this->shaderProgram = CreateShaderProgram();
         gridShaderProgram = CreateShaderProgram("grid.vert", "grid.frag");
 
-        computeProgram = CreateComputeProgram(g_config.scientific ? "geodesic_scientific.comp" : "geodesic.comp");
+        computeProgram = CreateComputeProgram(g_config.scientific ? resolveScientificShader().c_str() : "geodesic.comp");
         if (g_config.scientific) {
             cout << "[INFO] scientific mode: geodesic_scientific.comp (planar RK4, rs=1 units)"
                  << (g_config.relativistic ? ", relativistic disk shading" : "") << "\n";
@@ -656,7 +673,10 @@ struct Engine {
         data.right = vec4(right, 0.0f);
         data.up = vec4(up, 0.0f);
         data.forward = vec4(fwd, 0.0f);
-        data.tanHalfFov = tan(radians(cam.fovYDeg * 0.5f));
+        // Computed in double then rounded once: identical to the historical
+        // compile-time constant tan(radians(60.0f * 0.5f)) (tan 30° is a
+        // hard-to-round case where runtime tanf is 1 ulp off).
+        data.tanHalfFov = static_cast<float>(std::tan(static_cast<double>(radians(cam.fovYDeg * 0.5f))));
         data.aspect = float(WIDTH) / float(HEIGHT);
         data.moving = (cam.dragging || cam.panning) ? 1 : 0;
 
@@ -778,33 +798,58 @@ static void printUsage() {
             "  (no flags)     historical baseline: geodesic.comp legacyEulerStep\n";
 }
 
-static bool parseArgs(int argc, char** argv) {
+enum class ParseResult { Ok, Help, Error };
+
+static std::string lowerExtension(const std::string& path) {
+    const std::size_t dot = path.find_last_of('.');
+    std::string ext = (dot == std::string::npos) ? "" : path.substr(dot);
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext;
+}
+
+static ParseResult parseArgs(int argc, char** argv) {
+    // --help anywhere wins (exit 0), before any other validation.
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--help" || a == "-h") {
             printUsage();
-            return false;
-        } else if (a == "--scientific") {
+            return ParseResult::Help;
+        }
+    }
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        const bool takesValue = (a == "--capture" || a == "--scene");
+        if (takesValue && i + 1 >= argc) {
+            cerr << "[ERROR] missing value for " << a << "\n";
+            return ParseResult::Error;
+        }
+        if (a == "--scientific") {
             g_config.scientific = true;
         } else if (a == "--relativistic") {
             g_config.scientific = true;
             g_config.relativistic = true;
-        } else if (a == "--capture" && i + 1 < argc) {
+        } else if (a == "--capture") {
             g_config.capturePath = argv[++i];
-        } else if (a == "--scene" && i + 1 < argc) {
+            const std::string ext = lowerExtension(g_config.capturePath);
+            if (ext != ".png" && ext != ".bmp" && ext != ".ppm") {
+                // Fail before creating a window / rendering a frame.
+                cerr << "[ERROR] unsupported capture extension (use .png, .bmp or .ppm): " << g_config.capturePath << "\n";
+                return ParseResult::Error;
+            }
+        } else if (a == "--scene") {
             std::string err;
             if (!bh::load_scene_params_json(argv[++i], g_config.scene, err)) {
                 cerr << "[ERROR] scene load failed: " << err << "\n";
-                return false;
+                return ParseResult::Error;
             }
             g_config.sceneLoaded = true;
         } else {
             cerr << "[ERROR] unknown argument: " << a << "\n";
             printUsage();
-            return false;
+            return ParseResult::Error;
         }
     }
-    return true;
+    return ParseResult::Ok;
 }
 
 // Apply a loaded scene to the global baseline state (camera, black hole, objects, Gravity).
@@ -819,15 +864,16 @@ static void applySceneToGlobals() {
     camera.sceneTarget = vec3(sc.camera.target_x, sc.camera.target_y, sc.camera.target_z);
     camera.update();
     Gravity = sc.gravity;
-    if (!sc.objects.empty()) {
-        objects.clear();
-        for (const bh::SceneObject& o : sc.objects) {
-            ObjectData od;
-            od.posRadius = vec4(o.pos_m[0], o.pos_m[1], o.pos_m[2], o.radius_m);
-            od.color = vec4(o.color_rgba[0], o.color_rgba[1], o.color_rgba[2], o.color_rgba[3]);
-            od.mass = static_cast<float>(o.mass_kg);
-            objects.push_back(od);
-        }
+    // The loader already supplies the three default objects (marker resized to
+    // the loaded hole) when the JSON has no "objects" key, so an explicit
+    // "objects": [] means "no objects" — exactly like bh_render_cpu.
+    objects.clear();
+    for (const bh::SceneObject& o : sc.objects) {
+        ObjectData od;
+        od.posRadius = vec4(o.pos_m[0], o.pos_m[1], o.pos_m[2], o.radius_m);
+        od.color = vec4(o.color_rgba[0], o.color_rgba[1], o.color_rgba[2], o.color_rgba[3]);
+        od.mass = static_cast<float>(o.mass_kg);
+        objects.push_back(od);
     }
     cout << "[INFO] scene loaded: " << sc.bh_name << " rs=" << SagA.r_s << " m, camera R=" << camera.radius
          << " az=" << camera.azimuth << " el=" << camera.elevation << ", " << objects.size()
@@ -861,8 +907,10 @@ void setupCameraCallbacks(GLFWwindow* window) {
 
 // -- MAIN -- //
 int main(int argc, char** argv) {
-    if (!parseArgs(argc, argv)) {
-        return (argc > 1 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) ? 0 : 2;
+    g_exePath = (argc > 0 && argv[0]) ? argv[0] : "";
+    const ParseResult parsed = parseArgs(argc, argv);
+    if (parsed != ParseResult::Ok) {
+        return parsed == ParseResult::Help ? 0 : 2;
     }
     if (g_config.sceneLoaded) {
         applySceneToGlobals();
@@ -922,7 +970,10 @@ int main(int argc, char** argv) {
         }
         // 5) overlay the bent grid
         mat4 view = lookAt(camera.position(), camera.target, vec3(0,1,0));
-        mat4 proj = perspective(radians(camera.fovYDeg), float(engine.COMPUTE_WIDTH)/engine.COMPUTE_HEIGHT, 1e9f, 1e14f);
+        // Keep the historical literal on the default path (byte-identical grid).
+        const float gridAspect = float(engine.COMPUTE_WIDTH) / engine.COMPUTE_HEIGHT;
+        mat4 proj = (camera.fovYDeg == 60.0f) ? perspective(radians(60.0f), gridAspect, 1e9f, 1e14f)
+                                              : perspective(radians(camera.fovYDeg), gridAspect, 1e9f, 1e14f);
         mat4 viewProj = proj * view;
         engine.drawGrid(viewProj);
 
@@ -941,6 +992,8 @@ int main(int argc, char** argv) {
             std::vector<unsigned char> rgba(static_cast<std::size_t>(w) * h * 4);
             glBindTexture(GL_TEXTURE_2D, engine.texture);
             glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            // imageStore → GetTexImage visibility requires TEXTURE_UPDATE (GL 4.3 §7.12.2).
+            glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
             glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
             // Compose like the fullscreen pass: RGB weighted by alpha over the black clear colour.
             std::vector<std::uint8_t> rgb8(static_cast<std::size_t>(w) * h * 3);
@@ -956,7 +1009,7 @@ int main(int argc, char** argv) {
             }
             std::string err;
             const std::string& out = g_config.capturePath;
-            const std::string ext = out.size() >= 4 ? out.substr(out.size() - 4) : "";
+            const std::string ext = lowerExtension(out);
             bool ok = false;
             if (ext == ".png") ok = bh::image_io::write_png(out, w, h, rgb8, err);
             else if (ext == ".bmp") ok = bh::image_io::write_bmp(out, w, h, rgb8, err);

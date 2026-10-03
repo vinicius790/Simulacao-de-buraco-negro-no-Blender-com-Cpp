@@ -203,6 +203,13 @@ void test_scene_params_roundtrip() {
     expect_near(frag.camera.azimuth_rad, 0.5, 1e-12, "fragment azimuth");
     expect_near(frag.camera.elevation_rad, 1.2, 1e-12, "fragment elevation");
 
+    for (const char* bad : {R"({"black_hole":{"r_s_m":0}})", R"({"black_hole":{"r_s_m":-5}})",
+                            R"({"black_hole":{"mass_kg":0}})"}) {
+        bh::SceneParams tmp;
+        std::string e;
+        expect(!bh::scene_params_from_json(bad, tmp, e) && !e.empty(),
+               std::string("loader rejects invalid black hole: ") + bad);
+    }
     const auto annulus = bh::scene_disk_annulus(defaults);
     expect_near(annulus.inner_m, defaults.r_s_m * 2.2, 1.0, "scene_disk_annulus inner");
 }

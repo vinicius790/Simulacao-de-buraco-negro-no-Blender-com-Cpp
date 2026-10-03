@@ -238,7 +238,10 @@ def set_disk_spin_keyframes(mat, scene, turns_total: float) -> int:
         f1 = f0 + 1
     sock.default_value[0] = 0.0
     sock.keyframe_insert("default_value", index=0, frame=f0)
-    sock.default_value[0] = float(turns_total)
+    # Seamless loop: frame_end shows turns·(n−1)/n so frame_end+1 ≡ frame_start
+    # (keyframing the full turn at frame_end would repeat the first image).
+    n = max(1, f1 - f0 + 1)
+    sock.default_value[0] = float(turns_total) * (n - 1) / n
     sock.keyframe_insert("default_value", index=0, frame=f1)
 
     for fc in tree.animation_data.action.fcurves:

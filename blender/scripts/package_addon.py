@@ -47,11 +47,13 @@ def collect_addon_files(addon_dir: Path) -> List[Path]:
 def build_zip_bytes(addon_dir: Path) -> bytes:
     """Return the deterministic archive bytes for ``addon_dir``."""
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    # ZIP_STORED: DEFLATE output differs between zlib builds (e.g. zlib-ng), so
+    # stored entries are the only byte-reproducible choice across platforms.
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
         for path in collect_addon_files(addon_dir):
             arcname = f"{PKG_NAME}/{path.relative_to(addon_dir).as_posix()}"
             info = zipfile.ZipInfo(arcname, date_time=FIXED_DATE_TIME)
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = zipfile.ZIP_STORED
             info.create_system = 3  # Unix, regardless of host OS
             info.external_attr = 0o644 << 16
             zf.writestr(info, path.read_bytes())
