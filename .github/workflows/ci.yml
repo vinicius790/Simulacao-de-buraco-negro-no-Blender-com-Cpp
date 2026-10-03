@@ -5,6 +5,7 @@ on:
   pull_request:
 
 jobs:
+  # Scientific library, CPU renderer and all Python contracts — no OpenGL needed.
   scientific-headless:
     runs-on: ubuntu-latest
     steps:
@@ -22,6 +23,51 @@ jobs:
       - name: Test
         run: ctest --test-dir build/ci-scientific --output-on-failure
 
+      - name: Blender addon zips are up to date
+        run: |
+          python3 blender/scripts/package_addon.py
+          git diff --exit-code -- blender/addons/black_hole_bridge.zip blender/black_hole_bridge.zip
+
+      - name: Render showcase images (CPU reference renderer)
+        run: |
+          mkdir -p renders
+          B=build/ci-scientific/bh_render_cpu
+          $B --out renders/legacy_el125.png --width 400 --height 300 --elevation 1.25
+          $B --scene examples/scene_relativistic_showcase.json --mode relativistic --width 480 --height 270 --stars --out renders/showcase_relativistic.png
+          $B --scene examples/scene_relativistic_showcase.json --mode blackbody --width 480 --height 270 --stars --out renders/showcase_blackbody.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpu-renders
+          path: renders/
+
+  # Portability: scientific library, CPU renderer, CLI contract and Python
+  # contracts on Windows (MSVC) and macOS (Apple Clang). The OpenGL viewer needs
+  # GL 4.3 compute (not available on macOS) and is covered by linux-build.
+  scientific-portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Configure
+        run: cmake -S . -B build/portable -DBLACK_HOLE_BUILD_GL=OFF -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build/portable --config Release
+
+      - name: Test
+        run: ctest --test-dir build/portable -C Release --output-on-failure
+
+  # Full OpenGL build; Mesa llvmpipe + Xvfb give a real OpenGL 4.5 context so the
+  # GPU<->CPU golden agreement test actually runs (it SKIPs only without GL).
   linux-build:
     runs-on: ubuntu-latest
     steps:
@@ -36,6 +82,10 @@ jobs:
             libglfw3-dev \
             libglm-dev \
             libgl1-mesa-dev \
+            libgl1-mesa-dri \
+            mesa-utils \
+            xvfb \
+            xauth \
             glslang-tools
 
       - name: Configure
@@ -44,8 +94,39 @@ jobs:
       - name: Build
         run: cmake --build --preset ci-linux
 
-      - name: Static regression tests
+      - name: OpenGL context available (llvmpipe)
+        run: xvfb-run -a glxinfo -B | grep -E "renderer|core profile version"
+
+      - name: Tests (incl. GPU<->CPU agreement)
         run: ctest --test-dir build/ci-linux --output-on-failure
 
       - name: Validate GLSL
         run: cmake --build build/ci-linux --target validate_shaders
+
+      - name: Capture legacy + scientific GPU frames
+        working-directory: build/ci-linux
+        run: |
+          mkdir -p ../../gpu-captures
+          xvfb-run -a ./BlackHole3D --capture ../../gpu-captures/legacy_default.png
+          xvfb-run -a ./BlackHole3D --scene ../../examples/scene_relativistic_showcase.json --relativistic --capture ../../gpu-captures/showcase_relativistic.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpu-captures
+          path: gpu-captures/
+
+  # Real Blender (Ubuntu package, 4.0.x = addon minimum) builds the scene headless.
+  blender-headless:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Blender
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends blender
+
+      - name: Build .blend with the addon
+        run: |
+          blender --version | head -1
+          blender --background --factory-startup --python-exit-code 1 \
+            --python blender/scripts/build_scene_headless.py -- --out "$PWD/black_hole_sim.blend"
+          test -s black_hole_sim.blend

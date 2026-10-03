@@ -409,6 +409,20 @@ void apply_objects(const std::string& array_body, SceneParams& out) {
 
 }  // namespace
 
+bool is_black_hole_marker(const SceneObject& o, const SceneParams& scene) {
+    const double dx = o.pos_m[0] - scene.bh_position_m[0];
+    const double dy = o.pos_m[1] - scene.bh_position_m[1];
+    const double dz = o.pos_m[2] - scene.bh_position_m[2];
+    const double rs = scene.r_s_m;
+    if (std::sqrt(dx * dx + dy * dy + dz * dz) > 1e-6 * rs) {
+        return false;
+    }
+    const double own_rs = units::schwarzschild_radius_si(o.mass_kg);
+    const bool radius_matches = std::abs(o.radius_m - rs) <= 0.05 * rs ||
+                                (own_rs > 0.0 && std::abs(o.radius_m - own_rs) <= 0.05 * own_rs);
+    return radius_matches || o.mass_kg >= 0.5 * scene.mass_kg;
+}
+
 SceneParams make_default_scene_params() {
     SceneParams p;
     // Seed the three default objects matching black_hole.cpp::objects.
@@ -468,12 +482,31 @@ bool scene_params_from_json(const std::string& json_text, SceneParams& out, std:
         apply_objects(body, tmp);
         has_objects = true;
     }
-    (void)has_objects;
+    if (!has_objects) {
+        // Default objects kept: re-centre / re-size the black-hole marker to the
+        // loaded hole so legacy and scientific renders agree for any mass.
+        for (SceneObject& o : tmp.objects) {
+            if (o.pos_m == std::array<double, 3>{{0.0, 0.0, 0.0}} && o.color_rgba[0] == 0.0 &&
+                o.color_rgba[1] == 0.0 && o.color_rgba[2] == 0.0) {
+                o.pos_m = tmp.bh_position_m;
+                o.radius_m = tmp.r_s_m;
+                o.mass_kg = tmp.mass_kg;
+            }
+        }
+    }
 
     // Minimal sanity: schema should look like our id when present.
     if (!tmp.schema.empty() &&
         tmp.schema.find("black_hole.scene_params") == std::string::npos) {
         err = "unexpected schema id: " + tmp.schema;
+        return false;
+    }
+    if (!(std::isfinite(tmp.r_s_m) && tmp.r_s_m > 0.0)) {
+        err = "invalid black_hole.r_s_m (must be finite and > 0)";
+        return false;
+    }
+    if (!(std::isfinite(tmp.mass_kg) && tmp.mass_kg > 0.0)) {
+        err = "invalid black_hole.mass_kg (must be finite and > 0)";
         return false;
     }
     if (!(std::isfinite(tmp.camera.radius_m) && tmp.camera.radius_m > 0.0)) {

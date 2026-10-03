@@ -85,6 +85,15 @@ std::string scene_params_to_json(const SceneParams& in);
 /// Parse from a JSON string. Same contract as load_scene_params_json.
 bool scene_params_from_json(const std::string& json_text, SceneParams& out, std::string& err);
 
+/// True if `o` is the scene's black-hole MARKER object (the third default object
+/// in black_hole.cpp, drawn as a black sphere by the legacy shader). Physically
+/// correct paths skip it: the horizon test handles the hole exactly. The test
+/// does not depend on scene.r_s_m alone (a marker sized for another mass would
+/// otherwise become an opaque sphere that enlarges the shadow):
+/// centred on the hole AND (radius within 5 % of scene r_s, or of its own
+/// 2GM/c², or mass ≥ half the hole mass).
+bool is_black_hole_marker(const SceneObject& o, const SceneParams& scene);
+
 /// Derived geometric annulus for the current disk factors / rs.
 inline disk::Annulus scene_disk_annulus(const SceneParams& p) {
     return disk::legacy_annulus(p.r_s_m, p.disk_inner_factor_rs, p.disk_outer_factor_rs,

@@ -41,6 +41,18 @@ void geodesic_rhs(const RayState& ray, double rs, double rhs[6]) {
 
     const double f = lapse_factor(r, rs);
     const double dt_dlambda = (f > 0.0) ? (E / f) : 0.0;
+    // Inside/at the horizon the chart is invalid; RK stages that overshoot
+    // r = rs must still produce finite numbers (the ray is captured anyway),
+    // so the acceleration is frozen there instead of dividing by f = 0.
+    if (f <= 0.0) {
+        rhs[0] = dr;
+        rhs[1] = dtheta;
+        rhs[2] = dphi;
+        rhs[3] = 0.0;
+        rhs[4] = 0.0;
+        rhs[5] = 0.0;
+        return;
+    }
     const double st = std::sin(theta);
     const double ct = std::cos(theta);
 

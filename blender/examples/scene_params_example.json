@@ -1,52 +1,125 @@
 {
   "schema": "black_hole.scene_params/v1",
-  "notes": "Matches DiskUBO + Camera fields conceptually used by black_hole.cpp. Loaded by bh::load_scene_params_json (hand-rolled parser). Synced with blender/examples/scene_params_example.json.",
+  "notes": "Matches DiskUBO + Camera fields conceptually used by black_hole.cpp. Loaded by bh::load_scene_params_json (hand-rolled parser) and by bh_render_cpu --scene. Synced with examples/scene_params_example.json; 0.8.0 adds guides / render / animation presets (ignored by the C++ parser).",
   "gravity": false,
   "black_hole": {
     "name": "Sagittarius A*",
-    "mass_kg": 8.54e36,
+    "mass_kg": 8.54e+36,
     "r_s_m": 12690000000.0,
-    "position_m": [0.0, 0.0, 0.0]
+    "position_m": [
+      0.0,
+      0.0,
+      0.0
+    ]
   },
   "disk": {
     "inner_radius_m": 27918000000.0,
     "outer_radius_m": 65988000000.0,
     "inner_factor_rs": 2.2,
     "outer_factor_rs": 5.2,
-    "thickness_m": 1.0e9,
-    "disk_num": 2.0
+    "thickness_m": 1000000000.0,
+    "disk_num": 2.0,
+    "spin_turns": 1.0,
+    "turbulence": 0.0
+  },
+  "guides": {
+    "photon_sphere_rs": 1.5,
+    "critical_impact_rs": 2.598076211353316,
+    "isco_rs": 3.0,
+    "photon_sphere_in_M": 3.0,
+    "isco_in_M": 6.0,
+    "source": "include/black_hole/schwarzschild.hpp (rs = 2 M)"
   },
   "camera": {
     "radius_m": 63419400000.0,
     "azimuth_rad": 0.0,
     "elevation_rad": 1.5707963267948966,
     "fov_y_deg": 60.0,
-    "target_m": [0.0, 0.0, 0.0]
+    "target_m": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "radius_rs": 4.9975886524822695
   },
   "objects": [
     {
-      "pos_m": [4.0e11, 0.0, 0.0],
-      "radius_m": 4.0e10,
-      "color_rgba": [1.0, 1.0, 0.0, 1.0],
-      "mass_kg": 1.98892e30
+      "pos_m": [
+        400000000000.0,
+        0.0,
+        0.0
+      ],
+      "radius_m": 40000000000.0,
+      "color_rgba": [
+        1.0,
+        1.0,
+        0.0,
+        1.0
+      ],
+      "mass_kg": 1.98892e+30
     },
     {
-      "pos_m": [0.0, 0.0, 4.0e11],
-      "radius_m": 4.0e10,
-      "color_rgba": [1.0, 0.0, 0.0, 1.0],
-      "mass_kg": 1.98892e30
+      "pos_m": [
+        0.0,
+        0.0,
+        400000000000.0
+      ],
+      "radius_m": 40000000000.0,
+      "color_rgba": [
+        1.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "mass_kg": 1.98892e+30
     },
     {
-      "pos_m": [0.0, 0.0, 0.0],
+      "pos_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
       "radius_m": 12690000000.0,
-      "color_rgba": [0.0, 0.0, 0.0, 1.0],
-      "mass_kg": 8.54e36
+      "color_rgba": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "mass_kg": 8.54e+36
     }
   ],
+  "animation": {
+    "fps": 24,
+    "duration_s": 8.0,
+    "mode": "turntable",
+    "easing": "linear",
+    "azimuth_start_rad": 0.0,
+    "azimuth_end_rad": 6.283185307179586,
+    "elev_start_rad": 0.35,
+    "elev_end_rad": 2.791592653589793,
+    "radius_end_rs": 12.0
+  },
+  "render": {
+    "width": 800,
+    "height": 600,
+    "mode": "legacy",
+    "integrator": "rk4",
+    "frames": 1,
+    "supersample": 1,
+    "tool": "bh_render_cpu"
+  },
   "render_baseline": {
-    "window": [800, 600],
-    "compute": [200, 150],
+    "window": [
+      800,
+      600
+    ],
+    "compute": [
+      200,
+      150
+    ],
     "integrator": "legacyEulerStep",
     "scientific_default": false
-  }
+  },
+  "style_lock": "docs/ESTILO_VISUAL_SIMULACAO.md"
 }

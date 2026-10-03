@@ -1,2 +1,13 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# The Blender add-on zips are built byte-for-byte from these sources
+# (tests/test_blender_addon_parity.py); keep LF on every platform.
+blender/addons/black_hole_bridge/*.py text eol=lf
+blender/addons/black_hole_bridge/*.toml text eol=lf
+
+# Binary artefacts
+*.zip binary
+*.png binary
+*.gif binary
+*.blend binary

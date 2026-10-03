@@ -72,7 +72,6 @@ def build_warped_grid_verts_edges(
             idx = j * n + i
             edges.append((idx, idx + 1))
             edges.append((idx, idx + n))
-        # last column vertical? already covered by i loop for horizontals;
         # close right edge of row
         idx = j * n + grid_size
         edges.append((idx, idx + n))
@@ -82,6 +81,21 @@ def build_warped_grid_verts_edges(
         edges.append((idx, idx + 1))
 
     return verts, edges, spacing, offset
+
+
+def grid_quad_faces(grid_size: int):
+    """Quads of the (grid_size+1)² lattice built by build_warped_grid_verts_edges.
+
+    Their edges are exactly the grid lines, so a Wireframe modifier on these
+    faces renders the C++ GL_LINES grid as thin tubes (loose edges would be
+    invisible to Cycles/EEVEE).
+    """
+    n = grid_size + 1
+    return [
+        (j * n + i, j * n + i + 1, (j + 1) * n + i + 1, (j + 1) * n + i)
+        for j in range(grid_size)
+        for i in range(grid_size)
+    ]
 
 
 def build_grid(
@@ -115,7 +129,9 @@ def build_grid(
         mesh_name = name + suffix + "_Mesh"
         obj_name = name + suffix
         mesh = bpy.data.meshes.new(mesh_name)
-        mesh.from_pydata(verts, edges, [])
+        mesh.from_pydata(
+            [C.cpp_to_blender(v) for v in verts], [], grid_quad_faces(grid_size)
+        )
         mesh.update()
         obj = bpy.data.objects.new(obj_name, mesh)
         collection.objects.link(obj)
@@ -123,9 +139,12 @@ def build_grid(
             mesh.materials[0] = mat
         else:
             mesh.materials.append(mat)
-        # Prefer wireframe display
-        obj.display_type = "WIRE"
-        obj.show_wire = True
+        # Render the lattice edges as thin tubes (C++ draws GL_LINES).
+        wire = obj.modifiers.new(name="BH_GridLines", type="WIREFRAME")
+        wire.thickness = 2.0 * C.OVERLAY_LINE_RADIUS * rs
+        wire.use_replace = True
+        wire.use_even_offset = True
+        wire.use_boundary = True
         obj["bh_role"] = "grid"
         obj["bh_plane"] = plane
         obj["bh_grid_size"] = grid_size

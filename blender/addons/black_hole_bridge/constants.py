@@ -38,6 +38,26 @@ GRID_WARP_OFFSET_M = 3.0e10  # subtracted in C++ y warp
 WINDOW_WH = (800, 600)
 COMPUTE_WH = (200, 150)
 
+# Schwarzschild reference radii in units of rs (schwarzschild.hpp).
+# r_ph = 3 M = 1.5 rs; r_ISCO = 6 M = 3 rs; shadow edge for a distant
+# observer b_c = 3*sqrt(3) M = (3*sqrt(3)/2) rs ≈ 2.598 rs.
+PHOTON_SPHERE_FACTOR_RS = 1.5
+ISCO_FACTOR_RS = 3.0
+CRITICAL_IMPACT_FACTOR_RS = 3.0 * math.sqrt(3.0) / 2.0
+
+# bh_render_cpu (C++ headless CPU renderer) CLI vocabulary / defaults.
+RENDER_MODES = ("legacy", "relativistic", "blackbody")
+RENDER_INTEGRATORS = ("rk4", "rk45")
+RENDER_DEFAULT_WH = WINDOW_WH  # 800x600 — compute default on the C++ side is 200x150
+RENDER_FRAME_DIGITS = 4  # stem_0000.png … stem_{N-1:04d}.png
+RENDER_BINARY_NAME = "bh_render_cpu"
+RENDER_BINARY_CANDIDATES = (
+    "build/scientific/bh_render_cpu",
+    "build/sci/bh_render_cpu",
+    "build/default/bh_render_cpu",
+    "build/bh_render_cpu",
+)
+
 # --- Blender geometric units ---
 # For usability the Blender scene uses rs_geo = 1.0 (unit sphere = horizon).
 # Physical metres map via: metres = blender_units * rs_physical_m
@@ -50,6 +70,9 @@ DISK_COLOR_B = 0.2  # G channel = r_norm ∈ [inner/outer, 1]
 # Grid shading (grid.frag): vec4(0.5, 0.5, 0.5, 0.7)
 GRID_COLOR = (0.5, 0.5, 0.5, 0.7)
 
+# Guide rings reuse the grid grey at lower alpha (still the locked palette).
+GUIDE_COLOR = (0.5, 0.5, 0.5, 0.5)
+
 # Horizon / background
 HORIZON_COLOR = (0.0, 0.0, 0.0, 1.0)
 WORLD_BG_COLOR = (0.0, 0.0, 0.0, 1.0)
@@ -60,6 +83,15 @@ SCHEMA_ID = "black_hole.scene_params/v1"
 # Animation defaults
 ANIM_FPS = 24
 ANIM_DURATION_S = 8.0  # one full azimuth turntable
+ANIM_MODES = ("TURNTABLE", "ELEVATION_SWEEP", "DOLLY", "SPIRAL")
+ANIM_EASINGS = ("LINEAR", "SINE")
+ANIM_ELEV_START_RAD = 0.35
+ANIM_ELEV_END_RAD = math.pi - 0.35
+ANIM_RADIUS_END_RS = 12.0
+
+# Disk spin (UV rotation) defaults — OFF by default, style lock untouched.
+DISK_SPIN_TURNS = 1.0
+DISK_TURBULENCE = 0.0
 
 # Collection / object names
 COLL_ROOT = "BH_Scene"
@@ -68,6 +100,7 @@ COLL_DISK = "BH_Disk"
 COLL_GRID = "BH_Grid"
 COLL_CAMERA = "BH_Camera"
 COLL_LIGHTS = "BH_Lights"
+COLL_GUIDES = "BH_Guides"
 
 OBJ_HORIZON = "BH_Horizon"
 OBJ_DISK = "BH_AccretionDisk"
@@ -75,6 +108,63 @@ OBJ_GRID = "BH_SpacetimeGrid"
 OBJ_CAM_EMPTY = "BH_OrbitPivot"
 OBJ_CAMERA = "BH_OrbitCamera"
 OBJ_KEY_LIGHT = "BH_FillLight"
+OBJ_GUIDE_PHOTON = "BH_Guide_PhotonSphere"
+OBJ_GUIDE_ISCO = "BH_Guide_ISCO"
+OBJ_GUIDE_CRITICAL = "BH_Guide_CriticalImpact"
+OBJ_RENDER_PLANE = "BH_RenderPlane"
+
+
+# Rendered thickness of the wire overlays (grid lines, guide rings) in geo
+# units. Loose mesh edges are invisible to Cycles/EEVEE, so overlays are given
+# real geometry (Wireframe modifier / curve bevel) of this radius.
+OVERLAY_LINE_RADIUS = 0.012
+
+
+def cpp_to_blender(v):
+    """Map a point/vector from the C++ world frame to Blender's world frame.
+
+    The simulator is Y-up with the disk in the XZ plane (black_hole.cpp,
+    geodesic.comp). Blender is Z-up. The mapping is the proper rotation of
+    +90° about X:  (x, y, z)_cpp  →  (x, −z, y)_blender.
+    det = +1, so cross products (camera right = forward × up) are preserved and
+    a Blender camera tracking the origin with up = +Z frames the scene exactly
+    like the C++ camera with up = +Y. Pure helpers in this package keep the C++
+    frame (parity tests); conversion happens only when Blender data is written.
+    """
+    x, y, z = v
+    return (x, -z, y)
+
+
+def blender_to_cpp(v):
+    """Inverse of :func:`cpp_to_blender`: (x, y, z)_blender → (x, z, −y)_cpp."""
+    x, y, z = v
+    return (x, z, -y)
+
+
+def camera_position_blender(radius: float, azimuth: float, elevation: float):
+    """Camera::position() expressed in Blender's Z-up world frame."""
+    return cpp_to_blender(camera_position(radius, azimuth, elevation))
+
+
+def camera_inside_disk(
+    radius: float,
+    elevation: float,
+    inner_factor: float = DISK_INNER_FACTOR,
+    outer_factor: float = DISK_OUTER_FACTOR,
+    thickness_geo: float = DISK_THICKNESS_M / SAG_A_RS_M,
+) -> bool:
+    """True if the orbit camera (geo units, rs = 1) sits inside the disk slab.
+
+    The locked C++ default (radius ≈ 4.997 rs, elevation π/2) does: the camera
+    is within the 2.2–5.2 rs annulus and on the disk plane. In OpenGL that makes
+    the top half of the first frame solid yellow (float cos(π/2) ≠ 0); in
+    Blender the camera sees the inside of the slab. Raise the elevation (e.g.
+    1.25 rad) or the radius (> outer factor) for a clean shot.
+    """
+    el = max(0.01, min(math.pi - 0.01, elevation))
+    rho = radius * math.sin(el)
+    height = radius * math.cos(el)
+    return inner_factor <= rho <= outer_factor and abs(height) <= 0.5 * thickness_geo
 
 
 def rs_from_mass(mass_kg: float) -> float:

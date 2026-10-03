@@ -4,6 +4,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
+#include <cctype>
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -18,6 +19,11 @@
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+#include "black_hole/scene_params.hpp"
+#include "black_hole/cpu_renderer.hpp"
+#include "black_hole/image_io.hpp"
+#include "black_hole/disk_emission.hpp"
+#include "black_hole/orbits.hpp"
 using namespace glm;
 using namespace std;
 using Clock = std::chrono::high_resolution_clock;
@@ -30,9 +36,65 @@ double G = 6.67430e-11;
 struct Ray;
 bool Gravity = false;
 
+// ---------------------------------------------------------------------------
+// Optional runtime configuration (0.8.0). Defaults reproduce the historical
+// baseline exactly: no scene file, legacy geodesic.comp, legacy constants.
+//   --scene file.json   load black_hole.scene_params/v1 (camera, disk, objects, Gravity)
+//   --scientific        use shaders/geodesic_scientific.comp (planar RK4, rs = 1 units)
+//   --relativistic      scientific mode + Doppler/gravitational-redshift disk shading
+// ---------------------------------------------------------------------------
+struct RuntimeConfig {
+    bool scientific = false;
+    bool relativistic = false;
+    bool blackbody = false;       // --blackbody: Page–Thorne colours (scientific mode)
+    float exposure = 2.0f;        // --exposure
+    float spinSign = 1.0f;        // --spin-sign ±1
+    int maxSteps = 4000;          // --max-steps
+    double mdotEdd = 0.01;        // --mdot-edd (fraction of Eddington, blackbody)
+    bool sceneLoaded = false;
+    std::string capturePath;  // --capture: render one frame, save the compute texture, exit
+    bh::SceneParams scene = bh::make_default_scene_params();
+};
+RuntimeConfig g_config;
+std::string g_exePath;  // argv[0], used to find shaders next to the executable
+
+// The scientific shader ships next to the binary (CMake copies it) and under
+// shaders/ in the repository. Try cwd, then shaders/, then the executable's
+// directory, so `build/gl/BlackHole3D --scientific` also works from the repo root.
+static std::string resolveScientificShader() {
+    const std::string name = "geodesic_scientific.comp";
+    std::vector<std::string> candidates = {name, "shaders/" + name};
+    const std::size_t slash = g_exePath.find_last_of("/\\");
+    if (slash != std::string::npos) candidates.push_back(g_exePath.substr(0, slash + 1) + name);
+    for (const std::string& c : candidates) {
+        if (std::ifstream(c).good()) return c;
+    }
+    return name;  // CreateComputeProgram reports the failure
+}
+
+struct alignas(16) SciParamsUBOData {
+    std::int32_t colorMode;
+    std::int32_t maxSteps;
+    float stepK;
+    float stepMin;
+    float stepMax;
+    float sceneBound;
+    float exposure;
+    float spinSign;
+    float tempScale;
+    float peakTemperature;
+    float rOverMPerRs;
+    float _pad5;
+};
+static_assert(sizeof(SciParamsUBOData) == 48, "SciParams UBO layout must match geodesic_scientific.comp.");
+
 struct Camera {
     // Center the camera orbit on the black hole at (0, 0, 0)
     vec3 target = vec3(0.0f, 0.0f, 0.0f); // Always look at the black hole center
+    // Scene-file overrides (--scene). Defaults keep the historical baseline:
+    // look at the origin with a 60° vertical FOV.
+    vec3 sceneTarget = vec3(0.0f, 0.0f, 0.0f);
+    float fovYDeg = 60.0f;
     float radius = 6.34194e10f;
     float minRadius = 1e10f, maxRadius = 1e12f;
 
@@ -60,7 +122,7 @@ struct Camera {
     }
     void update() {
         // Always keep target at black hole center
-        target = vec3(0.0f, 0.0f, 0.0f);
+        target = sceneTarget;
         if(dragging || panning) {
             moving = true;
         } else {
@@ -87,7 +149,7 @@ struct Camera {
         lastY = y;
         update();
     }
-    void processMouseButton(int button, int action, int mods, GLFWwindow* win) {
+    void processMouseButton(int button, int action, int /*mods*/, GLFWwindow* win) {
         if (button == GLFW_MOUSE_BUTTON_LEFT || button == GLFW_MOUSE_BUTTON_MIDDLE) {
             if (action == GLFW_PRESS) {
                 dragging = true;
@@ -107,12 +169,12 @@ struct Camera {
             }
         }
     }
-    void processScroll(double xoffset, double yoffset) {
+    void processScroll(double /*xoffset*/, double yoffset) {
         radius -= yoffset * zoomSpeed;
         radius = glm::clamp(radius, minRadius, maxRadius);
         update();
     }
-    void processKey(int key, int scancode, int action, int mods) {
+    void processKey(int key, int /*scancode*/, int action, int /*mods*/) {
         if (action == GLFW_PRESS && key == GLFW_KEY_G) {
             Gravity = !Gravity;
             cout << "[INFO] Gravity turned " << (Gravity ? "ON" : "OFF") << endl;
@@ -200,6 +262,7 @@ struct Engine {
     GLuint cameraUBO = 0;
     GLuint diskUBO = 0;
     GLuint objectsUBO = 0;
+    GLuint sciUBO = 0;
     // -- grid mess vars -- //
     GLuint gridVAO = 0;
     GLuint gridVBO = 0;
@@ -246,10 +309,17 @@ struct Engine {
             exit(EXIT_FAILURE);
         }
         cout << "OpenGL " << glGetString(GL_VERSION) << "\n";
+        cout << "Renderer " << glGetString(GL_RENDERER) << "\n";
         this->shaderProgram = CreateShaderProgram();
         gridShaderProgram = CreateShaderProgram("grid.vert", "grid.frag");
 
-        computeProgram = CreateComputeProgram("geodesic.comp");
+        computeProgram = CreateComputeProgram(g_config.scientific ? resolveScientificShader().c_str() : "geodesic.comp");
+        if (g_config.scientific) {
+            cout << "[INFO] scientific mode: geodesic_scientific.comp (planar RK4, rs=1 units)"
+                 << (g_config.blackbody ? ", Page-Thorne blackbody disk"
+                                        : (g_config.relativistic ? ", relativistic disk shading" : ""))
+                 << "\n";
+        }
         screenTextureLocation = glGetUniformLocation(shaderProgram, "screenTexture");
         gridViewProjLocation = glGetUniformLocation(gridShaderProgram, "viewProj");
 
@@ -267,6 +337,11 @@ struct Engine {
         glBindBuffer(GL_UNIFORM_BUFFER, objectsUBO);
         glBufferData(GL_UNIFORM_BUFFER, sizeof(ObjectsUBOData), nullptr, GL_DYNAMIC_DRAW);
         glBindBufferBase(GL_UNIFORM_BUFFER, 3, objectsUBO);  // binding = 3 matches shader
+
+        glGenBuffers(1, &sciUBO);
+        glBindBuffer(GL_UNIFORM_BUFFER, sciUBO);
+        glBufferData(GL_UNIFORM_BUFFER, sizeof(SciParamsUBOData), nullptr, GL_DYNAMIC_DRAW);
+        glBindBufferBase(GL_UNIFORM_BUFFER, 4, sciUBO);  // binding = 4 (scientific shader only)
 
         auto result = QuadVAO();
         this->quadVAO = result[0];
@@ -557,6 +632,9 @@ struct Engine {
         if (objectsUBODirty) {
             uploadObjectsUBO(objects);
             objectsUBODirty = false;
+            if (g_config.scientific) {
+                uploadSciUBO();
+            }
         }
 
         // 3) bind it as image unit 0
@@ -573,6 +651,43 @@ struct Engine {
         // must cover texture fetch visibility as well as image access.
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
     }
+    // Scientific shader works in rs = 1 units; legacy shader in metres.
+    // Uses SceneParams::r_s_m (default: the legacy shader literal 1.269e10 m),
+    // exactly like bh_render_cpu, so CPU and GPU scientific renders share units.
+    float unitScale() const {
+        return g_config.scientific ? static_cast<float>(1.0 / g_config.scene.r_s_m) : 1.0f;
+    }
+    void uploadSciUBO() {
+        SciParamsUBOData d{};
+        d.colorMode = g_config.blackbody ? 2 : (g_config.relativistic ? 1 : 0);
+        d.maxSteps = g_config.maxSteps;
+        d.stepK = 0.02f;
+        d.stepMin = 0.005f;
+        d.stepMax = 2.0f;
+        float bound = static_cast<float>(g_config.scene.disk_outer_factor_rs);
+        for (const auto& o : objects) {
+            const float c = glm::length(vec3(o.posRadius)) + o.posRadius.w;
+            bound = std::max(bound, c * unitScale());
+        }
+        d.sceneBound = bound * 1.05f + 0.5f;
+        d.exposure = g_config.exposure;
+        d.spinSign = g_config.spinSign;
+        // Page–Thorne normalisation shared with bh_render_cpu (same scene, Ṁ, rs).
+        bh::render::Options bb;
+        bb.scene = g_config.scene;
+        bb.mdot_edd_fraction = g_config.mdotEdd;
+        const double G = bh::units::G_SI, c = bh::units::C_SI, M = g_config.scene.mass_kg;
+        const double rs_m = g_config.scene.r_s_m;
+        const double mdot = g_config.mdotEdd *
+            bh::disk_emission::eddington_accretion_rate_si(M, G, c, bh::orbits::thin_disk_efficiency());
+        const double pi = 3.14159265358979323846;
+        d.tempScale = static_cast<float>(std::pow(3.0 * G * M * mdot /
+            (8.0 * pi * bh::disk_emission::SIGMA_SB_SI * rs_m * rs_m * rs_m), 0.25));
+        d.peakTemperature = static_cast<float>(bh::render::peak_effective_temperature(bb));
+        d.rOverMPerRs = static_cast<float>(rs_m * c * c / (G * M));
+        glBindBuffer(GL_UNIFORM_BUFFER, sciUBO);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(d), &d);
+    }
     void uploadCameraUBO(const Camera& cam) {
         CameraUBOData data{};
         vec3 fwd = normalize(cam.target - cam.position());
@@ -580,11 +695,14 @@ struct Engine {
         vec3 right = normalize(cross(fwd, up));
         up = cross(right, fwd);
 
-        data.pos = vec4(cam.position(), 0.0f);
+        data.pos = vec4(cam.position() * unitScale(), 0.0f);
         data.right = vec4(right, 0.0f);
         data.up = vec4(up, 0.0f);
         data.forward = vec4(fwd, 0.0f);
-        data.tanHalfFov = tan(radians(60.0f * 0.5f));
+        // Computed in double then rounded once: identical to the historical
+        // compile-time constant tan(radians(60.0f * 0.5f)) (tan 30° is a
+        // hard-to-round case where runtime tanf is 1 ulp off).
+        data.tanHalfFov = static_cast<float>(std::tan(static_cast<double>(radians(cam.fovYDeg * 0.5f))));
         data.aspect = float(WIDTH) / float(HEIGHT);
         data.moving = (cam.dragging || cam.panning) ? 1 : 0;
 
@@ -594,14 +712,25 @@ struct Engine {
     void uploadObjectsUBO(const vector<ObjectData>& objs) {
         ObjectsUBOData data{};
 
-        size_t count = std::min(objs.size(), MAX_SCENE_OBJECTS);
-        data.numObjects = static_cast<std::int32_t>(count);
-
-        for (size_t i = 0; i < count; ++i) {
-            data.posRadius[i] = objs[i].posRadius;
-            data.color[i] = objs[i].color;
-            data.mass[i] = vec4(objs[i].mass, 0.0f, 0.0f, 0.0f);
+        // Legacy mode uploads every object (the black marker sphere included).
+        // Scientific mode skips the black-hole marker: the shader's exact horizon
+        // test draws the hole, using the SAME predicate as bh_render_cpu.
+        std::size_t count = 0;
+        for (const ObjectData& od : objs) {
+            if (count >= MAX_SCENE_OBJECTS) break;
+            if (g_config.scientific) {
+                bh::SceneObject so;
+                so.pos_m = {{od.posRadius.x, od.posRadius.y, od.posRadius.z}};
+                so.radius_m = od.posRadius.w;
+                so.mass_kg = od.mass;
+                if (bh::is_black_hole_marker(so, g_config.scene)) continue;
+            }
+            data.posRadius[count] = od.posRadius * unitScale();
+            data.color[count] = od.color;
+            data.mass[count] = vec4(od.mass, 0.0f, 0.0f, 0.0f);
+            ++count;
         }
+        data.numObjects = static_cast<std::int32_t>(count);
 
         // Upload
         glBindBuffer(GL_UNIFORM_BUFFER, objectsUBO);
@@ -613,6 +742,19 @@ struct Engine {
         diskData.disk_r2 = SagA.r_s * 5.2f;  // outer radius of the disk
         diskData.disk_num = 2.0f;
         diskData.thickness = 1e9f;
+        if (g_config.sceneLoaded) {
+            // JSON overrides (legacy literals above stay the documented defaults).
+            diskData.disk_r1 = SagA.r_s * static_cast<float>(g_config.scene.disk_inner_factor_rs);
+            diskData.disk_r2 = SagA.r_s * static_cast<float>(g_config.scene.disk_outer_factor_rs);
+            diskData.disk_num = static_cast<float>(g_config.scene.disk_num);
+            diskData.thickness = static_cast<float>(g_config.scene.disk_thickness_m);
+        }
+        if (g_config.scientific) {
+            // rs = 1 units: the annulus is exactly the configured factors.
+            diskData.disk_r1 = static_cast<float>(g_config.scene.disk_inner_factor_rs);
+            diskData.disk_r2 = static_cast<float>(g_config.scene.disk_outer_factor_rs);
+            diskData.thickness *= unitScale();
+        }
 
         glBindBuffer(GL_UNIFORM_BUFFER, diskUBO);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(diskData), &diskData);
@@ -673,7 +815,126 @@ struct Engine {
         glfwPollEvents();
     };
 };
-Engine engine;
+static void printUsage() {
+    cout << "BlackHole3D [--scene file.json] [--scientific] [--relativistic] [--blackbody]\n"
+            "            [--exposure E] [--spin-sign +1|-1] [--max-steps N] [--mdot-edd F]\n"
+            "            [--capture out.png] [--help]\n"
+            "  --scene        load black_hole.scene_params/v1 (camera, disk, objects, Gravity)\n"
+            "  --scientific   planar RK4 compute shader (geodesic_scientific.comp), rs=1 units\n"
+            "  --relativistic scientific + Doppler/gravitational redshift disk shading\n"
+            "  --blackbody    scientific + Page-Thorne blackbody disk (g-shifted, dark inside the ISCO)\n"
+            "  --exposure E   Reinhard exposure for --relativistic/--blackbody (default 2)\n"
+            "  --spin-sign S  disk rotation about +Y: +1 (default) or -1\n"
+            "  --max-steps N  RK4 step budget per ray in scientific mode (default 4000)\n"
+            "  --mdot-edd F   accretion rate as a fraction of Eddington for --blackbody (default 0.01)\n"
+            "  --capture      render one frame, save the 200x150 compute image (.png/.bmp/.ppm), exit\n"
+            "  (no flags)     historical baseline: geodesic.comp legacyEulerStep\n";
+}
+
+enum class ParseResult { Ok, Help, Error };
+
+static std::string lowerExtension(const std::string& path) {
+    const std::size_t dot = path.find_last_of('.');
+    std::string ext = (dot == std::string::npos) ? "" : path.substr(dot);
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext;
+}
+
+static ParseResult parseArgs(int argc, char** argv) {
+    // --help anywhere wins (exit 0), before any other validation.
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--help" || a == "-h") {
+            printUsage();
+            return ParseResult::Help;
+        }
+    }
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        const bool takesValue = (a == "--capture" || a == "--scene" || a == "--exposure" ||
+                                 a == "--spin-sign" || a == "--max-steps" || a == "--mdot-edd");
+        if (takesValue && i + 1 >= argc) {
+            cerr << "[ERROR] missing value for " << a << "\n";
+            return ParseResult::Error;
+        }
+        if (a == "--scientific") {
+            g_config.scientific = true;
+        } else if (a == "--relativistic") {
+            g_config.scientific = true;
+            g_config.relativistic = true;
+        } else if (a == "--blackbody") {
+            g_config.scientific = true;
+            g_config.blackbody = true;
+        } else if (a == "--exposure" || a == "--spin-sign" || a == "--max-steps" || a == "--mdot-edd") {
+            const std::string v = argv[++i];
+            char* end = nullptr;
+            const double x = std::strtod(v.c_str(), &end);
+            const bool parsed = end && *end == '\0' && !v.empty() && std::isfinite(x);
+            bool valid = parsed;
+            if (a == "--exposure") valid = valid && x >= 0.0;
+            if (a == "--spin-sign") valid = valid && (x == 1.0 || x == -1.0);
+            if (a == "--max-steps") valid = valid && x >= 1.0 && x <= 1e7 && x == std::floor(x);
+            if (a == "--mdot-edd") valid = valid && x > 0.0;
+            if (!valid) {
+                cerr << "[ERROR] bad value for " << a << ": '" << v << "'\n";
+                return ParseResult::Error;
+            }
+            if (a == "--exposure") g_config.exposure = static_cast<float>(x);
+            if (a == "--spin-sign") g_config.spinSign = static_cast<float>(x);
+            if (a == "--max-steps") g_config.maxSteps = static_cast<int>(x);
+            if (a == "--mdot-edd") g_config.mdotEdd = x;
+        } else if (a == "--capture") {
+            g_config.capturePath = argv[++i];
+            const std::string ext = lowerExtension(g_config.capturePath);
+            if (ext != ".png" && ext != ".bmp" && ext != ".ppm") {
+                // Fail before creating a window / rendering a frame.
+                cerr << "[ERROR] unsupported capture extension (use .png, .bmp or .ppm): " << g_config.capturePath << "\n";
+                return ParseResult::Error;
+            }
+        } else if (a == "--scene") {
+            std::string err;
+            if (!bh::load_scene_params_json(argv[++i], g_config.scene, err)) {
+                cerr << "[ERROR] scene load failed: " << err << "\n";
+                return ParseResult::Error;
+            }
+            g_config.sceneLoaded = true;
+        } else {
+            cerr << "[ERROR] unknown argument: " << a << "\n";
+            printUsage();
+            return ParseResult::Error;
+        }
+    }
+    return ParseResult::Ok;
+}
+
+// Apply a loaded scene to the global baseline state (camera, black hole, objects, Gravity).
+static void applySceneToGlobals() {
+    const bh::SceneParams& sc = g_config.scene;
+    SagA = BlackHole(vec3(sc.bh_position_m[0], sc.bh_position_m[1], sc.bh_position_m[2]),
+                     static_cast<float>(sc.mass_kg));
+    camera.radius = static_cast<float>(sc.camera.radius_m);
+    camera.azimuth = static_cast<float>(sc.camera.azimuth_rad);
+    camera.elevation = static_cast<float>(sc.camera.elevation_rad);
+    camera.fovYDeg = static_cast<float>(sc.camera.fov_y_deg);
+    camera.sceneTarget = vec3(sc.camera.target_x, sc.camera.target_y, sc.camera.target_z);
+    camera.update();
+    Gravity = sc.gravity;
+    // The loader already supplies the three default objects (marker resized to
+    // the loaded hole) when the JSON has no "objects" key, so an explicit
+    // "objects": [] means "no objects" — exactly like bh_render_cpu.
+    objects.clear();
+    for (const bh::SceneObject& o : sc.objects) {
+        ObjectData od;
+        od.posRadius = vec4(o.pos_m[0], o.pos_m[1], o.pos_m[2], o.radius_m);
+        od.color = vec4(o.color_rgba[0], o.color_rgba[1], o.color_rgba[2], o.color_rgba[3]);
+        od.mass = static_cast<float>(o.mass_kg);
+        objects.push_back(od);
+    }
+    cout << "[INFO] scene loaded: " << sc.bh_name << " rs=" << SagA.r_s << " m, camera R=" << camera.radius
+         << " az=" << camera.azimuth << " el=" << camera.elevation << ", " << objects.size()
+         << " objects, Gravity " << (Gravity ? "ON" : "OFF") << "\n";
+}
+
 void setupCameraCallbacks(GLFWwindow* window) {
     glfwSetWindowUserPointer(window, &camera);
 
@@ -700,7 +961,16 @@ void setupCameraCallbacks(GLFWwindow* window) {
 
 
 // -- MAIN -- //
-int main() {
+int main(int argc, char** argv) {
+    g_exePath = (argc > 0 && argv[0]) ? argv[0] : "";
+    const ParseResult parsed = parseArgs(argc, argv);
+    if (parsed != ParseResult::Ok) {
+        return parsed == ParseResult::Help ? 0 : 2;
+    }
+    if (g_config.sceneLoaded) {
+        applySceneToGlobals();
+    }
+    Engine engine;  // constructed after the CLI so the compute program matches the mode
     setupCameraCallbacks(engine.window);
 
     auto t0 = Clock::now();
@@ -755,7 +1025,10 @@ int main() {
         }
         // 5) overlay the bent grid
         mat4 view = lookAt(camera.position(), camera.target, vec3(0,1,0));
-        mat4 proj = perspective(radians(60.0f), float(engine.COMPUTE_WIDTH)/engine.COMPUTE_HEIGHT, 1e9f, 1e14f);
+        // Keep the historical literal on the default path (byte-identical grid).
+        const float gridAspect = float(engine.COMPUTE_WIDTH) / engine.COMPUTE_HEIGHT;
+        mat4 proj = (camera.fovYDeg == 60.0f) ? perspective(radians(60.0f), gridAspect, 1e9f, 1e14f)
+                                              : perspective(radians(camera.fovYDeg), gridAspect, 1e9f, 1e14f);
         mat4 viewProj = proj * view;
         engine.drawGrid(viewProj);
 
@@ -763,6 +1036,49 @@ int main() {
         glViewport(0, 0, engine.WIDTH, engine.HEIGHT);
         engine.dispatchCompute(camera);
         engine.drawFullScreenQuad();
+
+        if (!g_config.capturePath.empty()) {
+            // Golden-image capture: read back the raw compute texture. The fullscreen
+            // quad maps texture row 0 to the BOTTOM of the window (texcoord v = 0), so
+            // rows are flipped to produce the on-screen orientation (row 0 = top),
+            // which is also the bh_render_cpu convention → 1:1 GPU/CPU comparison.
+            glFinish();
+            const int w = engine.textureWidth, h = engine.textureHeight;
+            std::vector<unsigned char> rgba(static_cast<std::size_t>(w) * h * 4);
+            glBindTexture(GL_TEXTURE_2D, engine.texture);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            // imageStore → GetTexImage visibility requires TEXTURE_UPDATE (GL 4.3 §7.12.2).
+            glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+            // Compose like the fullscreen pass: RGB weighted by alpha over the black clear colour.
+            std::vector<std::uint8_t> rgb8(static_cast<std::size_t>(w) * h * 3);
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    const std::size_t src = (static_cast<std::size_t>(h - 1 - y) * w + x) * 4;
+                    const std::size_t dst = (static_cast<std::size_t>(y) * w + x) * 3;
+                    const unsigned a = rgba[src + 3];
+                    for (int c = 0; c < 3; ++c) {
+                        rgb8[dst + c] = static_cast<std::uint8_t>((rgba[src + c] * a + 127u) / 255u);
+                    }
+                }
+            }
+            std::string err;
+            const std::string& out = g_config.capturePath;
+            const std::string ext = lowerExtension(out);
+            bool ok = false;
+            if (ext == ".png") ok = bh::image_io::write_png(out, w, h, rgb8, err);
+            else if (ext == ".bmp") ok = bh::image_io::write_bmp(out, w, h, rgb8, err);
+            else if (ext == ".ppm") ok = bh::image_io::write_ppm(out, w, h, rgb8, err);
+            else err = "unsupported capture extension (use .png, .bmp or .ppm)";
+            if (!ok) {
+                cerr << "[ERROR] capture failed: " << err << "\n";
+                glfwDestroyWindow(engine.window);
+                glfwTerminate();
+                return 1;
+            }
+            cout << "[INFO] captured " << w << "x" << h << " -> " << out << "\n";
+            break;
+        }
 
         // 6) present to screen
         glfwSwapBuffers(engine.window);

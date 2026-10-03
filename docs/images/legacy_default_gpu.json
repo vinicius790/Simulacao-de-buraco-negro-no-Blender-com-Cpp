@@ -1,0 +1,7 @@
+{
+  "description": "Golden capture of the historical baseline: BlackHole3D with no flags, --capture (200x150 compute image, on-screen orientation, rgb*alpha over black).",
+  "image": "legacy_default_gpu.png",
+  "renderer": "llvmpipe (LLVM 20.1.2, 256 bits)",
+  "gl_version": "4.5 (Core Profile) Mesa 25.2.8-0ubuntu0.24.04.2",
+  "note": "Exact equality is required only on this renderer/version; other drivers get a tolerance (float32 shader arithmetic is implementation-specific)."
+}
