@@ -306,13 +306,14 @@ def check_render_bridge(rb) -> None:
     assert rb.parse_render_summary("nothing here") is None
     assert rb.parse_render_summary("") is None
 
-    assert rb.expected_frame_paths("/d/frame.png", 1) == ["/d/frame.png"]
+    # Compare as Path objects: on Windows str(Path("/d/x")) is "\\d\\x".
+    assert [Path(p) for p in rb.expected_frame_paths("/d/frame.png", 1)] == [Path("/d/frame.png")]
     seq = rb.expected_frame_paths("/d/frame.png", 3)
     assert [Path(p).name for p in seq] == ["frame_0000.png", "frame_0001.png", "frame_0002.png"]
     files = rb.find_sequence_files("/d/frame_0000.png", existing=["frame_0002.png", "frame_0000.png",
                                                                   "frame_0001.png", "other.png"])
     assert [Path(p).name for p in files] == ["frame_0000.png", "frame_0001.png", "frame_0002.png"]
-    assert rb.find_sequence_files("/d/single.png", existing=["single.png"]) == ["/d/single.png"]
+    assert [Path(p) for p in rb.find_sequence_files("/d/single.png", existing=["single.png"])] == [Path("/d/single.png")]
     assert rb.sequence_first_number("/d/frame_0007.png") == 7
     w, h = rb.plane_size_for_fov(math.radians(60.0), 4 / 3, 10.0)
     _close(h, 2 * 10.0 * math.tan(math.radians(30.0)), what="plane h")
