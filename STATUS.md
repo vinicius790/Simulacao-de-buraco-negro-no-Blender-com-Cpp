@@ -74,7 +74,7 @@ At the locked default elevation `M_PI / 2.0f`, `cos(π/2f) ≈ −4.37e-8`, so t
 4. ~~Blackbody mode on the GPU~~ — ✔ **DONE**: `BlackHole3D --blackbody` (Page–Thorne, g-shifted) agrees with `bh_render_cpu --mode blackbody` to 1/255 in `gpu_cpu_agreement`.
 5. **Optional opt-in fix for the legacy default-view artifact** (e.g. a flag that nudges the camera off the disk plane) — must never change the default baseline.
 6. ~~Runtime scientific controls in `BlackHole3D`~~ — ✔ **DONE**: `--exposure`, `--spin-sign`, `--max-steps`, `--mdot-edd` (tested by `bh3d_cli`).
-7. **Real LICENSE and authors** — still `TBD` / placeholders (`LICENSE-NOTES.md`, `CITATION.cff`).
+7. **Real LICENSE and authors** — upstream publishes no license (verified at `kavan010/black_hole@dc263bb`); only the Blender add-on declares MIT (owner's manifest choice, add-on Python code only, copyright line still to be added by the owner). Authors in `CITATION.cff` remain placeholders. See `LICENSE-NOTES.md`.
 
 ---
 

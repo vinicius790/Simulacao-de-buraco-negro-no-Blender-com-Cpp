@@ -101,7 +101,7 @@ Tabela completa em [`README.md`](README.md#física-resumo-com-números-medidos) 
 - Sem transferência radiativa, GRMHD, coroa ou linhas espectrais.
 - Números de GPU só em Mesa llvmpipe (software); nenhum tempo de GPU real é afirmado.
 - O disco legado começa em 2,2 rs, dentro da ISCO (3 rs); a cena showcase usa 3–12 rs.
-- Licença ainda indefinida (`LICENSE-NOTES.md`, `CITATION.cff` com autores placeholder).
+- Licença: o upstream não publica nenhuma; só o addon Blender declara MIT (escolha do dono, cobre apenas o addon). Ver `LICENSE-NOTES.md`; `CITATION.cff` mantém autores placeholder.
 
 ## Mapa
 

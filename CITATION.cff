@@ -29,5 +29,6 @@ keywords:
   - geodesic
   - OpenGL
   - compute-shader
-license: TBD
-# license-url: leave unset until a real LICENSE is chosen by copyright holders
+# license: intentionally omitted. CFF 1.2.0 only accepts SPDX identifiers, and the
+# copyright holders have not published one (see LICENSE-NOTES.md). The Blender
+# add-on alone declares MIT in its blender_manifest.toml.
