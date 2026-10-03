@@ -38,6 +38,7 @@ def strip_comments(glsl: str) -> str:
 
 
 def block_fields(glsl: str, block: str) -> list[str]:
+    glsl = strip_comments(glsl)  # comments may contain braces / semicolons
     m = re.search(rf"uniform\s+{block}\s*\{{(?P<body>.*?)\}}", glsl, re.DOTALL)
     if not m:
         fail(f"uniform block {block} not found")
@@ -92,7 +93,10 @@ def main() -> int:
             fail(f"SciParams type mismatch: GLSL '{g}' vs C++ '{c}'")
         if gn != cn:
             fail(f"SciParams name/order mismatch: GLSL '{gn}' vs C++ '{cn}'")
-    require(cpp, r"sizeof\(SciParamsUBOData\)\s*==\s*32", "SciParams static_assert size 32")
+    # std140: every SciParams member is a 4-byte scalar, so size = 4·N rounded up to 16.
+    expected_size = (4 * len(cpp_fields) + 15) // 16 * 16
+    require(cpp, rf"sizeof\(SciParamsUBOData\)\s*==\s*{expected_size}\b",
+            f"SciParams static_assert size {expected_size}")
 
     require(sci, r"Kerr / spin: NOT implemented", "scientific shader honesty marker")
     require(sci, r"r\s*\*\s*f\s*\*\s*dphi\s*\*\s*dphi", "corrected Christoffel term r*f*dphi^2")

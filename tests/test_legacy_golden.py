@@ -41,6 +41,8 @@ def main() -> int:
     ap.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     ap.add_argument("--bin-dir", type=Path, required=True)
     args = ap.parse_args()
+    args.bin_dir = args.bin_dir.resolve()  # subprocesses run with cwd=bin_dir
+    args.root = args.root.resolve()
     sys.path.insert(0, str(args.root / "tools"))
     import image_diff
 

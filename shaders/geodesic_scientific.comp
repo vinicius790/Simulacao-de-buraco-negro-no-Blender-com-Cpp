@@ -51,14 +51,18 @@ layout(std140, binding = 3) uniform Objects {
 
 // Scientific-mode parameters (binding 4). Mirrors bh::render::Options.
 layout(std140, binding = 4) uniform SciParams {
-    int   colorMode;      // 0 = legacy vec3(1,r,0.2)·r, 1 = legacy + Doppler/redshift
+    int   colorMode;      // 0 = legacy vec3(1,r,0.2)·r, 1 = legacy + Doppler/redshift, 2 = Page–Thorne blackbody
     int   maxSteps;       // e.g. 4000
     float stepK;          // geometric step factor (0.02)
     float stepMin;        // in rs (0.005)
     float stepMax;        // in rs (2.0)
     float sceneBound;     // escape radius bound (rs)
-    float exposure;       // Reinhard exposure for colorMode 1
+    float exposure;       // Reinhard exposure for colorMode 1 / 2
     float spinSign;       // +1 / −1 disk rotation about +Y
+    float tempScale;      // T0 = (3GMṀ / (8πσ rs³))^{1/4} [K]: T_eff = T0 (R(x) / r_rs³)^{1/4}
+    float peakTemperature;// max T_eff over the disk [K] (brightness normalisation)
+    float rOverMPerRs;    // r/M for r = 1 rs (= rs_m c² / (G M); 2 for a self-consistent rs)
+    float _pad5;
 } sci;
 
 const float RS = 1.0;
@@ -160,6 +164,37 @@ float redshiftFactor(float rho, float E, float Ly, float rCam) {
 
 float reinhard(float c) { float v = c * sci.exposure; return v / (1.0 + v); }
 
+// ---- Page–Thorne thin disk + blackbody colour (mirrors disk_emission.hpp) ----
+// R(x), x = sqrt(r/M); zero inside the ISCO (r ≤ 6M).
+float pageThorneCorrection(float rOverM) {
+    if (rOverM <= 6.0) return 0.0;
+    float x = sqrt(rOverM);
+    const float s3 = 1.7320508075688772;
+    const float s6 = 2.449489742783178;
+    float logArg = ((x + s3) * (s6 - s3)) / ((x - s3) * (s6 + s3));
+    return (x - s6 + 0.5 * s3 * log(logArg)) / (x * (1.0 - 3.0 / (x * x)));
+}
+
+// Planckian locus (Kim et al. 2002) → linear sRGB, max component = 1.
+vec3 blackbodyRGB(float T) {
+    T = clamp(T, 1667.0, 25000.0);
+    float t1 = 1.0 / T, t2 = t1 * t1, t3 = t2 * t1;  // powers of 1/T (no T³ overflow risk)
+    float x = (T <= 4000.0) ? (-0.2661239e9 * t3 - 0.2343589e6 * t2 + 0.8776956e3 * t1 + 0.179910)
+                            : (-3.0258469e9 * t3 + 2.1070379e6 * t2 + 0.2226347e3 * t1 + 0.240390);
+    float x2 = x * x, x3 = x2 * x;
+    float y = (T <= 2222.0) ? (-1.1063814 * x3 - 1.34811020 * x2 + 2.18555832 * x - 0.20219683)
+            : (T <= 4000.0) ? (-0.9549476 * x3 - 1.37418593 * x2 + 2.09137015 * x - 0.16748867)
+                            : ( 3.0817580 * x3 - 5.87338670 * x2 + 3.75112997 * x - 0.37001483);
+    float X = (y > 0.0) ? x / y : 0.0;
+    float Z = (y > 0.0) ? (1.0 - x - y) / y : 0.0;
+    vec3 rgb = vec3( 3.2406 * X - 1.5372 - 0.4986 * Z,
+                    -0.9689 * X + 1.8758 + 0.0415 * Z,
+                     0.0557 * X - 0.2040 + 1.0570 * Z);
+    rgb = max(rgb, vec3(0.0));
+    float m = max(rgb.r, max(rgb.g, rgb.b));
+    return m > 0.0 ? rgb / m : rgb;
+}
+
 void main() {
     const int WIDTH  = 200;
     const int HEIGHT = 150;
@@ -218,6 +253,19 @@ void main() {
             float rn = rho / disk_r2;
             if (sci.colorMode == 0) {
                 color = vec4(1.0, rn, 0.2, rn);                 // legacy look (blended over black)
+            } else if (sci.colorMode == 2) {
+                // Page–Thorne blackbody shifted by g (no emission inside the ISCO).
+                float R = pageThorneCorrection(rho * sci.rOverMPerRs);
+                float Temit = (R > 0.0) ? sci.tempScale * pow(R / (rho * rho * rho), 0.25) : 0.0;
+                if (Temit > 0.0) {
+                    float g = redshiftFactor(rho, ray.E, ray.Ly, length(cam.camPos));
+                    float rel = Temit / sci.peakTemperature;
+                    float brightness = 4.0 * g * g * g * g * rel * rel * rel * rel;
+                    vec3 c = blackbodyRGB(g * Temit) * brightness;
+                    color = vec4(reinhard(c.r), reinhard(c.g), reinhard(c.b), 1.0);
+                } else {
+                    color = vec4(0.0, 0.0, 0.0, 1.0);
+                }
             } else {
                 float g = redshiftFactor(rho, ray.E, ray.Ly, length(cam.camPos));
                 float boost = g * g * g * g;

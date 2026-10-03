@@ -2,8 +2,8 @@
 """GPU ↔ CPU golden agreement for the scientific mode (needs OpenGL 4.3).
 
 Runs
-    BlackHole3D --scene S --scientific|--relativistic --capture gpu.png
-    bh_render_cpu --scene S [--mode relativistic] --out cpu.png
+    BlackHole3D --scene S --scientific|--relativistic|--blackbody --capture gpu.png
+    bh_render_cpu --scene S --mode legacy|relativistic|blackbody --out cpu.png
 for a few camera poses and compares the 200×150 images with tools/image_diff.py.
 
 The GPU shader (float32) and the CPU reference (float64) implement the same
@@ -50,6 +50,8 @@ def main() -> int:
     ap.add_argument("--max-bad-fraction", type=float, default=0.002)
     ap.add_argument("--max-mean-error", type=float, default=0.5)
     args = ap.parse_args()
+    args.bin_dir = args.bin_dir.resolve()  # subprocesses run with cwd=bin_dir
+    args.root = args.root.resolve()
 
     sys.path.insert(0, str(args.root / "tools"))
     import image_diff  # noqa: E402
@@ -83,7 +85,8 @@ def main() -> int:
                 else:
                     doc[key] = value
             scene.write_text(json.dumps(doc))
-            for mode_flag, cpu_mode in (("--scientific", "legacy"), ("--relativistic", "relativistic")):
+            for mode_flag, cpu_mode in (("--scientific", "legacy"), ("--relativistic", "relativistic"),
+                                        ("--blackbody", "blackbody")):
                 gpu_png = tmpd / f"{label}{mode_flag}_gpu.png"
                 cpu_png = tmpd / f"{label}{mode_flag}_cpu.png"
                 r = subprocess.run(prefix + [str(bh3d), "--scene", str(scene), mode_flag, "--capture", str(gpu_png)],

@@ -164,6 +164,14 @@ if(BLACK_HOLE_BUILD_GL)
                     --bin-dir $<TARGET_FILE_DIR:BlackHole3D>
             )
             set_tests_properties(legacy_golden PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 1800)
+            add_test(
+                NAME bh3d_cli
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bh3d_cli.py
+                    --root ${CMAKE_CURRENT_SOURCE_DIR}
+                    --bin-dir $<TARGET_FILE_DIR:BlackHole3D>
+            )
+            set_tests_properties(bh3d_cli PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 1800)
         endif()
     endif()
 

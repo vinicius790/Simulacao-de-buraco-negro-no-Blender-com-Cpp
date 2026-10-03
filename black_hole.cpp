@@ -22,6 +22,8 @@
 #include "black_hole/scene_params.hpp"
 #include "black_hole/cpu_renderer.hpp"
 #include "black_hole/image_io.hpp"
+#include "black_hole/disk_emission.hpp"
+#include "black_hole/orbits.hpp"
 using namespace glm;
 using namespace std;
 using Clock = std::chrono::high_resolution_clock;
@@ -44,6 +46,11 @@ bool Gravity = false;
 struct RuntimeConfig {
     bool scientific = false;
     bool relativistic = false;
+    bool blackbody = false;       // --blackbody: Page–Thorne colours (scientific mode)
+    float exposure = 2.0f;        // --exposure
+    float spinSign = 1.0f;        // --spin-sign ±1
+    int maxSteps = 4000;          // --max-steps
+    double mdotEdd = 0.01;        // --mdot-edd (fraction of Eddington, blackbody)
     bool sceneLoaded = false;
     std::string capturePath;  // --capture: render one frame, save the compute texture, exit
     bh::SceneParams scene = bh::make_default_scene_params();
@@ -74,8 +81,12 @@ struct alignas(16) SciParamsUBOData {
     float sceneBound;
     float exposure;
     float spinSign;
+    float tempScale;
+    float peakTemperature;
+    float rOverMPerRs;
+    float _pad5;
 };
-static_assert(sizeof(SciParamsUBOData) == 32, "SciParams UBO layout must match geodesic_scientific.comp.");
+static_assert(sizeof(SciParamsUBOData) == 48, "SciParams UBO layout must match geodesic_scientific.comp.");
 
 struct Camera {
     // Center the camera orbit on the black hole at (0, 0, 0)
@@ -305,7 +316,9 @@ struct Engine {
         computeProgram = CreateComputeProgram(g_config.scientific ? resolveScientificShader().c_str() : "geodesic.comp");
         if (g_config.scientific) {
             cout << "[INFO] scientific mode: geodesic_scientific.comp (planar RK4, rs=1 units)"
-                 << (g_config.relativistic ? ", relativistic disk shading" : "") << "\n";
+                 << (g_config.blackbody ? ", Page-Thorne blackbody disk"
+                                        : (g_config.relativistic ? ", relativistic disk shading" : ""))
+                 << "\n";
         }
         screenTextureLocation = glGetUniformLocation(shaderProgram, "screenTexture");
         gridViewProjLocation = glGetUniformLocation(gridShaderProgram, "viewProj");
@@ -646,8 +659,8 @@ struct Engine {
     }
     void uploadSciUBO() {
         SciParamsUBOData d{};
-        d.colorMode = g_config.relativistic ? 1 : 0;
-        d.maxSteps = 4000;
+        d.colorMode = g_config.blackbody ? 2 : (g_config.relativistic ? 1 : 0);
+        d.maxSteps = g_config.maxSteps;
         d.stepK = 0.02f;
         d.stepMin = 0.005f;
         d.stepMax = 2.0f;
@@ -657,8 +670,21 @@ struct Engine {
             bound = std::max(bound, c * unitScale());
         }
         d.sceneBound = bound * 1.05f + 0.5f;
-        d.exposure = 2.0f;
-        d.spinSign = 1.0f;
+        d.exposure = g_config.exposure;
+        d.spinSign = g_config.spinSign;
+        // Page–Thorne normalisation shared with bh_render_cpu (same scene, Ṁ, rs).
+        bh::render::Options bb;
+        bb.scene = g_config.scene;
+        bb.mdot_edd_fraction = g_config.mdotEdd;
+        const double G = bh::units::G_SI, c = bh::units::C_SI, M = g_config.scene.mass_kg;
+        const double rs_m = g_config.scene.r_s_m;
+        const double mdot = g_config.mdotEdd *
+            bh::disk_emission::eddington_accretion_rate_si(M, G, c, bh::orbits::thin_disk_efficiency());
+        const double pi = 3.14159265358979323846;
+        d.tempScale = static_cast<float>(std::pow(3.0 * G * M * mdot /
+            (8.0 * pi * bh::disk_emission::SIGMA_SB_SI * rs_m * rs_m * rs_m), 0.25));
+        d.peakTemperature = static_cast<float>(bh::render::peak_effective_temperature(bb));
+        d.rOverMPerRs = static_cast<float>(rs_m * c * c / (G * M));
         glBindBuffer(GL_UNIFORM_BUFFER, sciUBO);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(d), &d);
     }
@@ -790,10 +816,17 @@ struct Engine {
     };
 };
 static void printUsage() {
-    cout << "BlackHole3D [--scene file.json] [--scientific] [--relativistic] [--capture out.png] [--help]\n"
+    cout << "BlackHole3D [--scene file.json] [--scientific] [--relativistic] [--blackbody]\n"
+            "            [--exposure E] [--spin-sign +1|-1] [--max-steps N] [--mdot-edd F]\n"
+            "            [--capture out.png] [--help]\n"
             "  --scene        load black_hole.scene_params/v1 (camera, disk, objects, Gravity)\n"
             "  --scientific   planar RK4 compute shader (geodesic_scientific.comp), rs=1 units\n"
             "  --relativistic scientific + Doppler/gravitational redshift disk shading\n"
+            "  --blackbody    scientific + Page-Thorne blackbody disk (g-shifted, dark inside the ISCO)\n"
+            "  --exposure E   Reinhard exposure for --relativistic/--blackbody (default 2)\n"
+            "  --spin-sign S  disk rotation about +Y: +1 (default) or -1\n"
+            "  --max-steps N  RK4 step budget per ray in scientific mode (default 4000)\n"
+            "  --mdot-edd F   accretion rate as a fraction of Eddington for --blackbody (default 0.01)\n"
             "  --capture      render one frame, save the 200x150 compute image (.png/.bmp/.ppm), exit\n"
             "  (no flags)     historical baseline: geodesic.comp legacyEulerStep\n";
 }
@@ -818,7 +851,8 @@ static ParseResult parseArgs(int argc, char** argv) {
     }
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
-        const bool takesValue = (a == "--capture" || a == "--scene");
+        const bool takesValue = (a == "--capture" || a == "--scene" || a == "--exposure" ||
+                                 a == "--spin-sign" || a == "--max-steps" || a == "--mdot-edd");
         if (takesValue && i + 1 >= argc) {
             cerr << "[ERROR] missing value for " << a << "\n";
             return ParseResult::Error;
@@ -828,6 +862,27 @@ static ParseResult parseArgs(int argc, char** argv) {
         } else if (a == "--relativistic") {
             g_config.scientific = true;
             g_config.relativistic = true;
+        } else if (a == "--blackbody") {
+            g_config.scientific = true;
+            g_config.blackbody = true;
+        } else if (a == "--exposure" || a == "--spin-sign" || a == "--max-steps" || a == "--mdot-edd") {
+            const std::string v = argv[++i];
+            char* end = nullptr;
+            const double x = std::strtod(v.c_str(), &end);
+            const bool parsed = end && *end == '\0' && !v.empty() && std::isfinite(x);
+            bool valid = parsed;
+            if (a == "--exposure") valid = valid && x >= 0.0;
+            if (a == "--spin-sign") valid = valid && (x == 1.0 || x == -1.0);
+            if (a == "--max-steps") valid = valid && x >= 1.0 && x <= 1e7 && x == std::floor(x);
+            if (a == "--mdot-edd") valid = valid && x > 0.0;
+            if (!valid) {
+                cerr << "[ERROR] bad value for " << a << ": '" << v << "'\n";
+                return ParseResult::Error;
+            }
+            if (a == "--exposure") g_config.exposure = static_cast<float>(x);
+            if (a == "--spin-sign") g_config.spinSign = static_cast<float>(x);
+            if (a == "--max-steps") g_config.maxSteps = static_cast<int>(x);
+            if (a == "--mdot-edd") g_config.mdotEdd = x;
         } else if (a == "--capture") {
             g_config.capturePath = argv[++i];
             const std::string ext = lowerExtension(g_config.capturePath);
