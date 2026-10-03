@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 from typing import Callable, Optional, Tuple
 
+from . import compat
 from . import constants as C
 
 try:
@@ -220,11 +221,7 @@ def align_camera_from_params(
 
 
 def _clear_location_fcurves(cam) -> None:
-    if cam.animation_data and cam.animation_data.action:
-        action = cam.animation_data.action
-        for fc in list(action.fcurves):
-            if fc.data_path == "location":
-                action.fcurves.remove(fc)
+    """Drop the previous camera path (the whole camera action is replaced)."""
     cam.animation_data_clear()
 
 
@@ -263,10 +260,7 @@ def bake_camera_path(
         cam["bh_elevation"] = el
         cam["bh_radius"] = radius
 
-    if cam.animation_data and cam.animation_data.action:
-        for fc in cam.animation_data.action.fcurves:
-            for kp in fc.keyframe_points:
-                kp.interpolation = "LINEAR"
+    compat.set_linear(cam)  # Blender 5.0 removed Action.fcurves: use the slot channel bag
 
     scene.frame_set(1)
     return n_frames

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 
+from . import compat
 from . import constants as C
 
 try:
@@ -30,7 +31,7 @@ DISK_EMISSION_STRENGTH = 1.0
 
 
 def _clear_nodes(mat):
-    mat.use_nodes = True
+    compat.ensure_use_nodes(mat)
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
     nodes.clear()
@@ -209,7 +210,7 @@ def ensure_disk_material(
 
 def disk_spin_node(mat):
     """Return the ``BH_DiskSpin`` Mapping node of a disk material, or None."""
-    if mat is None or not mat.use_nodes or mat.node_tree is None:
+    if mat is None or mat.node_tree is None:
         return None
     return mat.node_tree.nodes.get(DISK_SPIN_NODE)
 
@@ -228,10 +229,7 @@ def set_disk_spin_keyframes(mat, scene, turns_total: float) -> int:
     data_path = sock.path_from_id("default_value")
     tree = mat.node_tree
 
-    if tree.animation_data and tree.animation_data.action:
-        for fc in list(tree.animation_data.action.fcurves):
-            if fc.data_path == data_path:
-                tree.animation_data.action.fcurves.remove(fc)
+    compat.remove_fcurves(tree, data_path)
 
     f0, f1 = int(scene.frame_start), int(scene.frame_end)
     if f1 <= f0:
@@ -244,12 +242,7 @@ def set_disk_spin_keyframes(mat, scene, turns_total: float) -> int:
     sock.default_value[0] = float(turns_total) * (n - 1) / n
     sock.keyframe_insert("default_value", index=0, frame=f1)
 
-    for fc in tree.animation_data.action.fcurves:
-        if fc.data_path == data_path:
-            fc.extrapolation = "LINEAR"
-            for kp in fc.keyframe_points:
-                kp.interpolation = "LINEAR"
-            fc.update()
+    compat.set_linear(tree, data_path, extrapolate=True)
     mat["bh_spin_turns"] = float(turns_total)
     scene.frame_set(f0)
     return f1 - f0
@@ -317,7 +310,7 @@ def setup_world_background(world=None, color=None):
             world = bpy.data.worlds.new("BH_World")
             bpy.context.scene.world = world
     color = color or C.WORLD_BG_COLOR
-    world.use_nodes = True
+    compat.ensure_use_nodes(world)
     nodes = world.node_tree.nodes
     links = world.node_tree.links
     nodes.clear()

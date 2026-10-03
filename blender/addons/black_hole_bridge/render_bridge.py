@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from . import camera_orbit
+from . import compat
 from . import constants as C
 from . import json_io
 
@@ -314,7 +315,7 @@ def _ensure_render_plane_material(image, name: str = "BH_RenderPlane_Mat"):
     mat = bpy.data.materials.get(name)
     if mat is None:
         mat = bpy.data.materials.new(name)
-    mat.use_nodes = True
+    compat.ensure_use_nodes(mat)
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
     nodes.clear()
     out = nodes.new("ShaderNodeOutputMaterial")

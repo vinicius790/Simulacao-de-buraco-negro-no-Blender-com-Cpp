@@ -7,6 +7,8 @@ animated GIF — standard library only.
 * one global 256-colour palette built by median cut over pixels sampled from
   every frame (stable colours, no per-frame flicker);
 * nearest-colour mapping through a 32×32×32 lookup cube;
+* optional 4×4 ordered (Bayer) dithering (--dither) to hide palette banding
+  in smooth gradients such as the accretion disk;
 * GIF89a with NETSCAPE2.0 looping and variable-length LZW (spec-compliant).
 """
 
@@ -126,6 +128,7 @@ def main() -> int:
     ap.add_argument("-o", "--out", type=Path, required=True)
     ap.add_argument("--fps", type=float, default=20.0)
     ap.add_argument("--pingpong", action="store_true", help="append the frames in reverse (seamless back-and-forth)")
+    ap.add_argument("--dither", action="store_true", help="4x4 ordered dithering (reduces banding)")
     args = ap.parse_args()
 
     paths: list[str] = []
@@ -155,8 +158,24 @@ def main() -> int:
     for c in palette:
         out += bytes(c)
     out += b"\x21\xFF\x0BNETSCAPE2.0\x03\x01\x00\x00\x00"  # loop forever
+    bayer = (0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5)
     for _, _, px in frames:
-        idx = bytes(lut[((px[i] >> 3) << 10) | ((px[i + 1] >> 3) << 5) | (px[i + 2] >> 3)] for i in range(0, w * h * 3, 3))
+        if args.dither:
+            # Threshold in [−7.5, +7.5] (one LUT cell = 8 levels), fixed per pixel
+            # position so the pattern does not crawl between frames.
+            out_idx = bytearray(w * h)
+            for y in range(h):
+                row = bayer[(y & 3) * 4:(y & 3) * 4 + 4]
+                for x in range(w):
+                    d = row[x & 3] - 7.5
+                    i = (y * w + x) * 3
+                    r = min(255, max(0, int(px[i] + d)))
+                    g = min(255, max(0, int(px[i + 1] + d)))
+                    b = min(255, max(0, int(px[i + 2] + d)))
+                    out_idx[y * w + x] = lut[((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)]
+            idx = bytes(out_idx)
+        else:
+            idx = bytes(lut[((px[i] >> 3) << 10) | ((px[i + 1] >> 3) << 5) | (px[i + 2] >> 3)] for i in range(0, w * h * 3, 3))
         out += b"\x21\xF9\x04\x04" + struct.pack("<H", delay) + b"\x00\x00"  # graphic control: no disposal
         out += b"\x2C" + struct.pack("<HHHHB", 0, 0, w, h, 0)
         out += b"\x08" + sub_blocks(lzw_encode(idx, 8))
