@@ -1,0 +1,25 @@
+{
+  "schema": "black_hole.scene_params/v1",
+  "notes": "Physically consistent showcase: thin disk from the ISCO (3 rs) to 12 rs, distant camera near edge-on. Use with bh_render_cpu --mode relativistic|blackbody or BlackHole3D --relativistic.",
+  "gravity": false,
+  "black_hole": {
+    "name": "Sagittarius A*",
+    "mass_kg": 8.54e36,
+    "r_s_m": 12690000000.0,
+    "position_m": [0.0, 0.0, 0.0]
+  },
+  "disk": {
+    "inner_factor_rs": 3.0,
+    "outer_factor_rs": 12.0,
+    "thickness_m": 1.0e9,
+    "disk_num": 2.0
+  },
+  "camera": {
+    "radius_m": 228420000000.0,
+    "azimuth_rad": 0.0,
+    "elevation_rad": 1.40,
+    "fov_y_deg": 38.0,
+    "target_m": [0.0, 0.0, 0.0]
+  },
+  "objects": []
+}

@@ -11,10 +11,18 @@ authors:
     alias: TODO-confirm
 repository-code: "https://github.com/kavan010/black_hole"
 url: "https://github.com/kavan010/black_hole"
+version: "0.8.0"
 abstract: >-
-  C++/OpenGL realtime null-geodesic visualization inspired by Sagittarius A*.
-  Default path preserves a historical visual/physics baseline; scientific
-  corrections are specified as a separate optional mode. Not a full GRMHD code.
+  C++17/OpenGL 4.3 realtime null-geodesic visualization of a Schwarzschild
+  black hole at Sagittarius A* scale, with a Blender 4.x addon frontend.
+  The default path preserves the historical visual/physics baseline
+  (single-stage Euler compute shader). Opt-in additions: a GPU scientific
+  mode (pole-safe planar RK4, continuous hit tests, derived escape criterion,
+  Doppler and gravitational redshift), a deterministic double-precision CPU
+  reference renderer (Page-Thorne thin-disk blackbody emission, RK4/RK45)
+  validated against the GPU, and a Blender render bridge. Kerr is provided
+  only as closed-form analytic radii; no Kerr ray tracing, radiative
+  transfer or GRMHD.
 keywords:
   - black-hole
   - gravitational-lensing

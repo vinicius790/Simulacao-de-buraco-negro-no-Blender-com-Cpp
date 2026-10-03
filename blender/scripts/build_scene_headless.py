@@ -6,6 +6,7 @@ Usage (when blender CLI is on PATH):
 
 Optional args after -- :
   blender --background --python build_scene_headless.py -- --out /path/out.blend --bake
+  (--no-bake skips the camera animation; --no-guides skips the Schwarzschild rings)
 
 Steam Blender usually has no CLI on PATH — use the UI: Build Full Scene instead.
 This script is bpy-only (no numpy).
@@ -26,6 +27,7 @@ _DEFAULT_OUT = _HERE.parent / "examples" / "output" / "black_hole_sim.blend"
 def _parse_argv(argv):
     out = _DEFAULT_OUT
     bake = True
+    guides = True
     if "--" in argv:
         argv = argv[argv.index("--") + 1 :]
     else:
@@ -41,9 +43,15 @@ def _parse_argv(argv):
         elif argv[i] == "--no-bake":
             bake = False
             i += 1
+        elif argv[i] == "--guides":
+            guides = True
+            i += 1
+        elif argv[i] == "--no-guides":
+            guides = False
+            i += 1
         else:
             i += 1
-    return out, bake
+    return out, bake, guides
 
 
 def main():
@@ -57,7 +65,7 @@ def main():
         )
         return 1
 
-    out_path, do_bake = _parse_argv(sys.argv)
+    out_path, do_bake, do_guides = _parse_argv(sys.argv)
     out_path = out_path.resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -67,7 +75,7 @@ def main():
         sys.path.insert(0, addon_parent)
 
     import black_hole_bridge
-    from black_hole_bridge import scene_builder, camera_orbit, export_ops
+    from black_hole_bridge import scene_builder, camera_orbit, guides
     from black_hole_bridge import constants as C
 
     # Fresh scene
@@ -92,6 +100,10 @@ def main():
 
     info = scene_builder.build_full_scene(bpy.context)
     print("[BH] ", info["note"])
+
+    if do_guides:
+        rings = guides.build_guides(scene_builder.ensure_collections()[C.COLL_GUIDES])
+        print(f"[BH] Built {len(rings)} guide rings (1.5 / 2.598 / 3.0 rs)")
 
     if do_bake:
         coll = scene_builder.ensure_collections()[C.COLL_CAMERA]

@@ -1,23 +1,25 @@
 #version 430
-// SCIENTIFIC GPU INTEGRATOR — NOT wired to BlackHole3D by default.
+// SCIENTIFIC GPU INTEGRATOR — optional mode, enabled with `BlackHole3D --scientific`.
 //
-// This file is a REFERENCE / FUTURE mode. Root geodesic.comp (legacyEulerStep)
-// remains the production path used by black_hole.cpp. Do NOT replace it.
+// Root geodesic.comp (legacyEulerStep) remains the DEFAULT production path and
+// is untouched. This shader is the GPU twin of bh_scientific / bh_render_cpu:
 //
-// Intent:
-//   True classical RK4 null-geodesic march in Schwarzschild coordinates with
-//   geometric units rs = 1 (lengths in units of the Schwarzschild radius).
-//   RHS uses the corrected Christoffel factor r*f on angular centrifugal terms
-//   (legacy geodesic.comp omits f — see docs/FISICA_SCHWARZSCHILD.md).
+//   * geometric units rs = 1 (the host divides camera, disk and objects by rs);
+//   * each ray is integrated in its OWN orbital plane (spherical symmetry ⇒ the
+//     geodesic is planar): state (r, φ, dr, dφ) with θ ≡ π/2, so the polar
+//     singularities of the global spherical chart never occur;
+//   * classical RK4 (4 RHS evaluations) with the corrected Christoffel term
+//     r·f·φ̇² and a geometric step dλ = clamp(k·r, min, max);
+//   * continuous hit tests: segment–plane for the disk (interpolated crossing),
+//     segment–sphere for horizon and objects;
+//   * proof-based escape: outgoing beyond the photon sphere and beyond the scene;
+//   * optional relativistic disk shading (Doppler + gravitational redshift,
+//     g = 1 / (u^t (1 + Ω L_axis / E)) / sqrt(f(r_cam)), intensity ∝ g⁴),
+//     selected via SciParams;
+//   * camera directions live in the static observer's orthonormal frame.
 //
-// Status gates before any production enable:
-//   1. CPU reference tests pass (tests/test_scientific_ref.cpp)
-//   2. CPU↔GPU trajectory agreement measured with documented tolerances
-//   3. Explicit mode switch exists (default MUST remain geodesic.comp)
-//
-// Coordinate chart: Schwarzschild (t, r, θ, φ), signature (−,+,+,+).
-// Kerr / spin: NOT implemented.
-// Novikov–Thorne disk emission: NOT implemented (geometric annulus only).
+// Kerr / spin: NOT implemented. Radiative transfer: NOT implemented.
+// Reference: include/black_hole/planar_geodesic.hpp, redshift.hpp, escape.hpp.
 
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(binding = 0, rgba8) writeonly uniform image2D outImage;
@@ -34,160 +36,207 @@ layout(std140, binding = 1) uniform Camera {
 } cam;
 
 layout(std140, binding = 2) uniform Disk {
-    float disk_r1;
-    float disk_r2;
+    float disk_r1;     // in rs
+    float disk_r2;     // in rs
     float disk_num;
     float thickness;
 };
 
-// Geometric units: rs = 1. Host must scale camera / disk into these units
-// before upload when this shader is eventually enabled.
-const float RS = 1.0;
-const float D_LAMBDA = 0.05;      // affine step in units of rs
-const float ESCAPE_R = 1.0e4;     // escape in units of rs
-const int   MAX_STEPS = 8000;
-
-struct Ray {
-    float r, theta, phi;
-    float dr, dtheta, dphi;
-    float E, L;
-    vec3  cart;  // Cartesian embedding for hit tests
+layout(std140, binding = 3) uniform Objects {
+    int numObjects;
+    vec4 objPosRadius[16];  // in rs (host-scaled); the host omits the black-hole marker (bh::is_black_hole_marker)
+    vec4 objColor[16];
+    vec4 mass[16];
 };
 
-float lapse(float r) {
-    return 1.0 - RS / r;
+// Scientific-mode parameters (binding 4). Mirrors bh::render::Options.
+layout(std140, binding = 4) uniform SciParams {
+    int   colorMode;      // 0 = legacy vec3(1,r,0.2)·r, 1 = legacy + Doppler/redshift
+    int   maxSteps;       // e.g. 4000
+    float stepK;          // geometric step factor (0.02)
+    float stepMin;        // in rs (0.005)
+    float stepMax;        // in rs (2.0)
+    float sceneBound;     // escape radius bound (rs)
+    float exposure;       // Reinhard exposure for colorMode 1
+    float spinSign;       // +1 / −1 disk rotation about +Y
+} sci;
+
+const float RS = 1.0;
+const float M  = 0.5;          // geometric mass, rs = 2M
+const float PHOTON_SPHERE = 1.5;
+
+struct PRay {
+    vec3 e1, e2;        // orbital-plane basis
+    float r, phi, dr, dphi;
+    float E, L;
+    float Ly;           // (pos × dir)·ŷ — conserved angular momentum about the disk axis
+};
+
+float lapse(float r) { return 1.0 - RS / r; }
+
+vec3 pray_pos(PRay p) { return p.r * (cos(p.phi) * p.e1 + sin(p.phi) * p.e2); }
+
+PRay pray_init(vec3 pos, vec3 dir) {
+    PRay p;
+    p.r = length(pos);
+    p.e1 = pos / p.r;
+    vec3 Lvec = cross(pos, dir);
+    float L = length(Lvec);
+    if (L < 1e-7 * p.r) {
+        // Radial ray: any plane containing e1.
+        vec3 helper = (abs(p.e1.x) < 0.9) ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+        vec3 n = normalize(cross(p.e1, helper));
+        p.e2 = cross(n, p.e1);
+        L = 0.0;
+    } else {
+        vec3 n = Lvec / L;
+        p.e2 = cross(n, p.e1);
+    }
+    p.phi = 0.0;
+    // `dir` is a direction in the STATIC camera's orthonormal frame:
+    // e_r̂ = sqrt(f) ∂_r ⇒ k^r = sqrt(f)·n_r ; e_φ̂ = ∂_φ / r ⇒ k^φ = n_φ / r.
+    // (Using dir as a coordinate velocity would inflate the shadow ~10 % in
+    // angle at the default camera radius.) Mirrors bh::make_planar_ray.
+    p.dr = sqrt(max(lapse(p.r), 0.0)) * dot(dir, p.e1);
+    p.dphi = dot(dir, p.e2) / p.r;
+    p.L = L;
+    p.Ly = Lvec.y;
+    float f = lapse(p.r);
+    // Corrected null seed: E = sqrt(dr² + f r² dφ²)  (dθ = 0 in the plane).
+    p.E = sqrt(max(p.dr * p.dr + f * p.r * p.r * p.dphi * p.dphi, 0.0));
+    return p;
 }
 
-void syncCart(inout Ray ray) {
-    float st = sin(ray.theta);
-    ray.cart = vec3(
-        ray.r * st * cos(ray.phi),
-        ray.r * st * sin(ray.phi),
-        ray.r * cos(ray.theta)
-    );
-}
-
-Ray initRay(vec3 pos, vec3 dir) {
-    Ray ray;
-    ray.r     = length(pos);
-    ray.theta = acos(clamp(pos.z / ray.r, -1.0, 1.0));
-    ray.phi   = atan(pos.y, pos.x);
-
-    float st = sin(ray.theta);
-    float ct = cos(ray.theta);
-    float sp = sin(ray.phi);
-    float cp = cos(ray.phi);
-
-    // Direction projected into spherical basis (same convention as geodesic.comp).
-    ray.dr     = st * cp * dir.x + st * sp * dir.y + ct * dir.z;
-    ray.dtheta = (ct * cp * dir.x + ct * sp * dir.y - st * dir.z) / ray.r;
-    ray.dphi   = (-sp * dir.x + cp * dir.y) / (ray.r * max(st, 1e-8));
-
-    ray.L = ray.r * ray.r * st * ray.dphi;
-    float f = lapse(ray.r);
-    float dt = sqrt(max((ray.dr * ray.dr) / f
-              + ray.r * ray.r * (ray.dtheta * ray.dtheta + st * st * ray.dphi * ray.dphi), 0.0));
-    ray.E = f * dt;
-    syncCart(ray);
-    return ray;
-}
-
-// Scientific geodesic RHS — corrected + r*f*(dθ² + sin²θ dφ²).
-void geodesicRHS(Ray ray, out vec3 d1, out vec3 d2) {
-    float r = ray.r;
-    float theta = ray.theta;
-    float dr = ray.dr;
-    float dtheta = ray.dtheta;
-    float dphi = ray.dphi;
+// Equatorial RHS: d/dλ (r, φ, dr, dφ).
+vec4 rhs(vec4 y, float E) {
+    float r = y.x, dr = y.z, dphi = y.w;
     float f = lapse(r);
-    float dt = (f > 0.0) ? (ray.E / f) : 0.0;
-    float st = sin(theta);
-    float ct = cos(theta);
-
-    d1 = vec3(dr, dtheta, dphi);
-    d2.x = -(RS / (2.0 * r * r)) * f * dt * dt
-         + (RS / (2.0 * r * r * max(f, 1e-12))) * dr * dr
-         + r * f * (dtheta * dtheta + st * st * dphi * dphi);  // ← f factor (scientific)
-    d2.y = -2.0 * dr * dtheta / r + st * ct * dphi * dphi;
-    d2.z = -2.0 * dr * dphi / r - 2.0 * ct / max(st, 1e-8) * dtheta * dphi;
+    if (f <= 0.0) return vec4(dr, dphi, 0.0, 0.0);  // inside the horizon: frozen (captured anyway)
+    float dt = E / f;
+    float d2r = -(RS / (2.0 * r * r)) * f * dt * dt
+              + (RS / (2.0 * r * r * f)) * dr * dr
+              + r * f * dphi * dphi;                 // ← corrected factor f
+    float d2phi = -2.0 * dr * dphi / r;
+    return vec4(dr, dphi, d2r, d2phi);
 }
 
-void applyState(inout Ray ray, vec3 pos, vec3 vel) {
-    ray.r = pos.x; ray.theta = pos.y; ray.phi = pos.z;
-    ray.dr = vel.x; ray.dtheta = vel.y; ray.dphi = vel.z;
+void rk4(inout PRay p, float h) {
+    vec4 y0 = vec4(p.r, p.phi, p.dr, p.dphi);
+    vec4 k1 = rhs(y0, p.E);
+    vec4 k2 = rhs(y0 + 0.5 * h * k1, p.E);
+    vec4 k3 = rhs(y0 + 0.5 * h * k2, p.E);
+    vec4 k4 = rhs(y0 + h * k3, p.E);
+    vec4 y1 = y0 + (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+    p.r = y1.x; p.phi = y1.y; p.dr = y1.z; p.dphi = y1.w;
 }
 
-// True classical RK4 (4 RHS evaluations). NOT the legacy single-stage Euler.
-void rk4Step(inout Ray ray, float dL) {
-    vec3 k1a, k1b, k2a, k2b, k3a, k3b, k4a, k4b;
-    vec3 y0 = vec3(ray.r, ray.theta, ray.phi);
-    vec3 v0 = vec3(ray.dr, ray.dtheta, ray.dphi);
-
-    geodesicRHS(ray, k1a, k1b);
-
-    Ray r2 = ray;
-    applyState(r2, y0 + 0.5 * dL * k1a, v0 + 0.5 * dL * k1b);
-    geodesicRHS(r2, k2a, k2b);
-
-    Ray r3 = ray;
-    applyState(r3, y0 + 0.5 * dL * k2a, v0 + 0.5 * dL * k2b);
-    geodesicRHS(r3, k3a, k3b);
-
-    Ray r4 = ray;
-    applyState(r4, y0 + dL * k3a, v0 + dL * k3b);
-    geodesicRHS(r4, k4a, k4b);
-
-    vec3 dy = (dL / 6.0) * (k1a + 2.0 * k2a + 2.0 * k3a + k4a);
-    vec3 dv = (dL / 6.0) * (k1b + 2.0 * k2b + 2.0 * k3b + k4b);
-    applyState(ray, y0 + dy, v0 + dv);
-    syncCart(ray);
+bool segSphere(vec3 p0, vec3 p1, vec3 c, float R, out float t) {
+    vec3 d = p1 - p0;
+    vec3 m = p0 - c;
+    float mm = dot(m, m);
+    if (mm <= R * R) { t = 0.0; return true; }
+    float dd = dot(d, d);
+    if (dd <= 0.0) return false;
+    float md = dot(m, d);
+    float cc = mm - R * R;
+    float disc = md * md - dd * cc;
+    if (disc < 0.0) return false;
+    t = (-md - sqrt(disc)) / dd;
+    return t >= 0.0 && t <= 1.0;
 }
 
-bool crossesEquatorialPlane(vec3 oldPos, vec3 newPos) {
-    // Y-up: disk in XZ. Cross when Y changes sign and cylindrical ρ in annulus.
-    bool crossed = (oldPos.y * newPos.y < 0.0);
-    if (!crossed) return false;
-    float rho = length(vec2(newPos.x, newPos.z));
-    return rho >= disk_r1 && rho <= disk_r2;
+// Doppler + gravitational redshift factor for a disk element at ρ (circular
+// orbit about +Y) as measured by the STATIC camera at r_cam:
+//   g = g_inf / sqrt(f(r_cam)),  g_inf = 1 / (u^t (1 + Ω L_y / E)).
+// Mirrors bh::redshift::doppler_gravitational_factor_at.
+float redshiftFactor(float rho, float E, float Ly, float rCam) {
+    float camFactor = inversesqrt(max(lapse(rCam), 1e-12));
+    if (rho <= PHOTON_SPHERE) return sqrt(max(lapse(rho), 0.0)) * camFactor;
+    float ut = inversesqrt(1.0 - 3.0 * M / rho);
+    float omega = (sci.spinSign < 0.0 ? -1.0 : 1.0) * sqrt(M / (rho * rho * rho));
+    float denom = ut * (1.0 + omega * Ly / E);
+    return denom > 0.0 ? camFactor / denom : 0.0;
 }
+
+float reinhard(float c) { float v = c * sci.exposure; return v / (1.0 + v); }
 
 void main() {
-    // NOTE: resolution here is illustrative for the scientific scaffold.
-    // Production BlackHole3D still hardcodes 200×150 via geodesic.comp.
     const int WIDTH  = 200;
     const int HEIGHT = 150;
-
     ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
     if (pix.x >= WIDTH || pix.y >= HEIGHT) return;
 
     float u = (2.0 * (pix.x + 0.5) / float(WIDTH)  - 1.0) * cam.aspect * cam.tanHalfFov;
     float v = (1.0 - 2.0 * (pix.y + 0.5) / float(HEIGHT)) * cam.tanHalfFov;
-    vec3 dir = normalize(u * cam.camRight - v * cam.camUp + cam.camForward);
-    Ray ray = initRay(cam.camPos, dir);
+    vec3 dir = normalize(u * cam.camRight - v * cam.camUp + cam.camForward);  // same orientation as geodesic.comp
+
+    PRay ray = pray_init(cam.camPos, dir);
+    vec3 prev = pray_pos(ray);
+    bool cameraOnPlane = abs(prev.y) < 1e-6 * ray.r;
 
     vec4 color = vec4(0.0);
-    vec3 prevPos = ray.cart;
-    bool hitBlackHole = false;
-    bool hitDisk = false;
+    bool done = false;
 
-    for (int i = 0; i < MAX_STEPS; ++i) {
-        if (ray.r <= RS * 1.001) { hitBlackHole = true; break; }
-        rk4Step(ray, D_LAMBDA);
-        if (crossesEquatorialPlane(prevPos, ray.cart)) { hitDisk = true; break; }
-        prevPos = ray.cart;
-        if (ray.r > ESCAPE_R) break;
-        // Soft pole guard
-        if (ray.theta < 1e-3 || ray.theta > 3.14159265 - 1e-3) break;
-    }
+    for (int i = 0; i < sci.maxSteps && !done; ++i) {
+        float h = clamp(sci.stepK * ray.r, sci.stepMin, sci.stepMax);
+        rk4(ray, h);
+        vec3 cur = pray_pos(ray);
 
-    if (hitDisk) {
-        // Same aesthetic as geodesic.comp: diskColor = vec3(1, r_norm, 0.2)
-        float r_norm = length(ray.cart) / max(disk_r2, 1e-6);
-        color = vec4(1.0, r_norm, 0.2, r_norm);
-    } else if (hitBlackHole) {
-        color = vec4(0.0, 0.0, 0.0, 1.0);
-    } else {
-        color = vec4(0.0);
+        float bestT = 2.0;
+        int kind = 0;           // 0 none, 1 horizon, 2 disk, 3 object
+        vec3 bestPos = cur;
+        float rho = 0.0;
+        int objIdx = -1;
+
+        float th;
+        if (ray.r <= RS || segSphere(prev, cur, vec3(0.0), RS, th)) {
+            bestT = (ray.r <= RS) ? 1.0 : th;
+            kind = 1;
+        }
+        if (!(cameraOnPlane && i == 0) && prev.y * cur.y <= 0.0 && prev.y != cur.y) {
+            float td = prev.y / (prev.y - cur.y);
+            vec3 hp = mix(prev, cur, td);
+            hp.y = 0.0;
+            float rr = length(hp.xz);
+            if (rr >= disk_r1 && rr <= disk_r2 && td < bestT) {
+                bestT = td; kind = 2; bestPos = hp; rho = rr;
+            }
+        }
+        for (int o = 0; o < numObjects; ++o) {
+            vec3 c = objPosRadius[o].xyz;
+            float R = objPosRadius[o].w;
+            float to;
+            if (segSphere(prev, cur, c, R, to) && to < bestT) {
+                bestT = to; kind = 3; bestPos = mix(prev, cur, to); objIdx = o;
+            }
+        }
+
+        if (kind == 1) {
+            color = vec4(0.0, 0.0, 0.0, 1.0);
+            done = true;
+        } else if (kind == 2) {
+            float rn = rho / disk_r2;
+            if (sci.colorMode == 0) {
+                color = vec4(1.0, rn, 0.2, rn);                 // legacy look (blended over black)
+            } else {
+                float g = redshiftFactor(rho, ray.E, ray.Ly, length(cam.camPos));
+                float boost = g * g * g * g;
+                float a = clamp(rn, 0.0, 1.0);
+                float k = a * boost;
+                color = vec4(reinhard(k), reinhard(clamp(rn * g, 0.0, 1.0) * k), reinhard(0.2 * k), 1.0);
+            }
+            done = true;
+        } else if (kind == 3) {
+            vec3 N = normalize(bestPos - objPosRadius[objIdx].xyz);
+            vec3 V = normalize(cam.camPos - bestPos);
+            float intensity = 0.1 + 0.9 * max(dot(N, V), 0.0);
+            color = vec4(objColor[objIdx].rgb * intensity, objColor[objIdx].a);
+            done = true;
+        } else if (ray.dr > 0.0 && ray.r > PHOTON_SPHERE && ray.r > sci.sceneBound) {
+            color = vec4(0.0);   // escaped: black background like the baseline
+            done = true;
+        }
+        prev = cur;
     }
 
     imageStore(outImage, pix, color);

@@ -18,6 +18,9 @@
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+#include "black_hole/scene_params.hpp"
+#include "black_hole/cpu_renderer.hpp"
+#include "black_hole/image_io.hpp"
 using namespace glm;
 using namespace std;
 using Clock = std::chrono::high_resolution_clock;
@@ -30,9 +33,41 @@ double G = 6.67430e-11;
 struct Ray;
 bool Gravity = false;
 
+// ---------------------------------------------------------------------------
+// Optional runtime configuration (0.8.0). Defaults reproduce the historical
+// baseline exactly: no scene file, legacy geodesic.comp, legacy constants.
+//   --scene file.json   load black_hole.scene_params/v1 (camera, disk, objects, Gravity)
+//   --scientific        use shaders/geodesic_scientific.comp (planar RK4, rs = 1 units)
+//   --relativistic      scientific mode + Doppler/gravitational-redshift disk shading
+// ---------------------------------------------------------------------------
+struct RuntimeConfig {
+    bool scientific = false;
+    bool relativistic = false;
+    bool sceneLoaded = false;
+    std::string capturePath;  // --capture: render one frame, save the compute texture, exit
+    bh::SceneParams scene = bh::make_default_scene_params();
+};
+RuntimeConfig g_config;
+
+struct alignas(16) SciParamsUBOData {
+    std::int32_t colorMode;
+    std::int32_t maxSteps;
+    float stepK;
+    float stepMin;
+    float stepMax;
+    float sceneBound;
+    float exposure;
+    float spinSign;
+};
+static_assert(sizeof(SciParamsUBOData) == 32, "SciParams UBO layout must match geodesic_scientific.comp.");
+
 struct Camera {
     // Center the camera orbit on the black hole at (0, 0, 0)
     vec3 target = vec3(0.0f, 0.0f, 0.0f); // Always look at the black hole center
+    // Scene-file overrides (--scene). Defaults keep the historical baseline:
+    // look at the origin with a 60° vertical FOV.
+    vec3 sceneTarget = vec3(0.0f, 0.0f, 0.0f);
+    float fovYDeg = 60.0f;
     float radius = 6.34194e10f;
     float minRadius = 1e10f, maxRadius = 1e12f;
 
@@ -60,7 +95,7 @@ struct Camera {
     }
     void update() {
         // Always keep target at black hole center
-        target = vec3(0.0f, 0.0f, 0.0f);
+        target = sceneTarget;
         if(dragging || panning) {
             moving = true;
         } else {
@@ -87,7 +122,7 @@ struct Camera {
         lastY = y;
         update();
     }
-    void processMouseButton(int button, int action, int mods, GLFWwindow* win) {
+    void processMouseButton(int button, int action, int /*mods*/, GLFWwindow* win) {
         if (button == GLFW_MOUSE_BUTTON_LEFT || button == GLFW_MOUSE_BUTTON_MIDDLE) {
             if (action == GLFW_PRESS) {
                 dragging = true;
@@ -107,12 +142,12 @@ struct Camera {
             }
         }
     }
-    void processScroll(double xoffset, double yoffset) {
+    void processScroll(double /*xoffset*/, double yoffset) {
         radius -= yoffset * zoomSpeed;
         radius = glm::clamp(radius, minRadius, maxRadius);
         update();
     }
-    void processKey(int key, int scancode, int action, int mods) {
+    void processKey(int key, int /*scancode*/, int action, int /*mods*/) {
         if (action == GLFW_PRESS && key == GLFW_KEY_G) {
             Gravity = !Gravity;
             cout << "[INFO] Gravity turned " << (Gravity ? "ON" : "OFF") << endl;
@@ -200,6 +235,7 @@ struct Engine {
     GLuint cameraUBO = 0;
     GLuint diskUBO = 0;
     GLuint objectsUBO = 0;
+    GLuint sciUBO = 0;
     // -- grid mess vars -- //
     GLuint gridVAO = 0;
     GLuint gridVBO = 0;
@@ -249,7 +285,11 @@ struct Engine {
         this->shaderProgram = CreateShaderProgram();
         gridShaderProgram = CreateShaderProgram("grid.vert", "grid.frag");
 
-        computeProgram = CreateComputeProgram("geodesic.comp");
+        computeProgram = CreateComputeProgram(g_config.scientific ? "geodesic_scientific.comp" : "geodesic.comp");
+        if (g_config.scientific) {
+            cout << "[INFO] scientific mode: geodesic_scientific.comp (planar RK4, rs=1 units)"
+                 << (g_config.relativistic ? ", relativistic disk shading" : "") << "\n";
+        }
         screenTextureLocation = glGetUniformLocation(shaderProgram, "screenTexture");
         gridViewProjLocation = glGetUniformLocation(gridShaderProgram, "viewProj");
 
@@ -267,6 +307,11 @@ struct Engine {
         glBindBuffer(GL_UNIFORM_BUFFER, objectsUBO);
         glBufferData(GL_UNIFORM_BUFFER, sizeof(ObjectsUBOData), nullptr, GL_DYNAMIC_DRAW);
         glBindBufferBase(GL_UNIFORM_BUFFER, 3, objectsUBO);  // binding = 3 matches shader
+
+        glGenBuffers(1, &sciUBO);
+        glBindBuffer(GL_UNIFORM_BUFFER, sciUBO);
+        glBufferData(GL_UNIFORM_BUFFER, sizeof(SciParamsUBOData), nullptr, GL_DYNAMIC_DRAW);
+        glBindBufferBase(GL_UNIFORM_BUFFER, 4, sciUBO);  // binding = 4 (scientific shader only)
 
         auto result = QuadVAO();
         this->quadVAO = result[0];
@@ -557,6 +602,9 @@ struct Engine {
         if (objectsUBODirty) {
             uploadObjectsUBO(objects);
             objectsUBODirty = false;
+            if (g_config.scientific) {
+                uploadSciUBO();
+            }
         }
 
         // 3) bind it as image unit 0
@@ -573,6 +621,30 @@ struct Engine {
         // must cover texture fetch visibility as well as image access.
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
     }
+    // Scientific shader works in rs = 1 units; legacy shader in metres.
+    // Uses SceneParams::r_s_m (default: the legacy shader literal 1.269e10 m),
+    // exactly like bh_render_cpu, so CPU and GPU scientific renders share units.
+    float unitScale() const {
+        return g_config.scientific ? static_cast<float>(1.0 / g_config.scene.r_s_m) : 1.0f;
+    }
+    void uploadSciUBO() {
+        SciParamsUBOData d{};
+        d.colorMode = g_config.relativistic ? 1 : 0;
+        d.maxSteps = 4000;
+        d.stepK = 0.02f;
+        d.stepMin = 0.005f;
+        d.stepMax = 2.0f;
+        float bound = static_cast<float>(g_config.scene.disk_outer_factor_rs);
+        for (const auto& o : objects) {
+            const float c = glm::length(vec3(o.posRadius)) + o.posRadius.w;
+            bound = std::max(bound, c * unitScale());
+        }
+        d.sceneBound = bound * 1.05f + 0.5f;
+        d.exposure = 2.0f;
+        d.spinSign = 1.0f;
+        glBindBuffer(GL_UNIFORM_BUFFER, sciUBO);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(d), &d);
+    }
     void uploadCameraUBO(const Camera& cam) {
         CameraUBOData data{};
         vec3 fwd = normalize(cam.target - cam.position());
@@ -580,11 +652,11 @@ struct Engine {
         vec3 right = normalize(cross(fwd, up));
         up = cross(right, fwd);
 
-        data.pos = vec4(cam.position(), 0.0f);
+        data.pos = vec4(cam.position() * unitScale(), 0.0f);
         data.right = vec4(right, 0.0f);
         data.up = vec4(up, 0.0f);
         data.forward = vec4(fwd, 0.0f);
-        data.tanHalfFov = tan(radians(60.0f * 0.5f));
+        data.tanHalfFov = tan(radians(cam.fovYDeg * 0.5f));
         data.aspect = float(WIDTH) / float(HEIGHT);
         data.moving = (cam.dragging || cam.panning) ? 1 : 0;
 
@@ -594,14 +666,25 @@ struct Engine {
     void uploadObjectsUBO(const vector<ObjectData>& objs) {
         ObjectsUBOData data{};
 
-        size_t count = std::min(objs.size(), MAX_SCENE_OBJECTS);
-        data.numObjects = static_cast<std::int32_t>(count);
-
-        for (size_t i = 0; i < count; ++i) {
-            data.posRadius[i] = objs[i].posRadius;
-            data.color[i] = objs[i].color;
-            data.mass[i] = vec4(objs[i].mass, 0.0f, 0.0f, 0.0f);
+        // Legacy mode uploads every object (the black marker sphere included).
+        // Scientific mode skips the black-hole marker: the shader's exact horizon
+        // test draws the hole, using the SAME predicate as bh_render_cpu.
+        std::size_t count = 0;
+        for (const ObjectData& od : objs) {
+            if (count >= MAX_SCENE_OBJECTS) break;
+            if (g_config.scientific) {
+                bh::SceneObject so;
+                so.pos_m = {{od.posRadius.x, od.posRadius.y, od.posRadius.z}};
+                so.radius_m = od.posRadius.w;
+                so.mass_kg = od.mass;
+                if (bh::is_black_hole_marker(so, g_config.scene)) continue;
+            }
+            data.posRadius[count] = od.posRadius * unitScale();
+            data.color[count] = od.color;
+            data.mass[count] = vec4(od.mass, 0.0f, 0.0f, 0.0f);
+            ++count;
         }
+        data.numObjects = static_cast<std::int32_t>(count);
 
         // Upload
         glBindBuffer(GL_UNIFORM_BUFFER, objectsUBO);
@@ -613,6 +696,19 @@ struct Engine {
         diskData.disk_r2 = SagA.r_s * 5.2f;  // outer radius of the disk
         diskData.disk_num = 2.0f;
         diskData.thickness = 1e9f;
+        if (g_config.sceneLoaded) {
+            // JSON overrides (legacy literals above stay the documented defaults).
+            diskData.disk_r1 = SagA.r_s * static_cast<float>(g_config.scene.disk_inner_factor_rs);
+            diskData.disk_r2 = SagA.r_s * static_cast<float>(g_config.scene.disk_outer_factor_rs);
+            diskData.disk_num = static_cast<float>(g_config.scene.disk_num);
+            diskData.thickness = static_cast<float>(g_config.scene.disk_thickness_m);
+        }
+        if (g_config.scientific) {
+            // rs = 1 units: the annulus is exactly the configured factors.
+            diskData.disk_r1 = static_cast<float>(g_config.scene.disk_inner_factor_rs);
+            diskData.disk_r2 = static_cast<float>(g_config.scene.disk_outer_factor_rs);
+            diskData.thickness *= unitScale();
+        }
 
         glBindBuffer(GL_UNIFORM_BUFFER, diskUBO);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(diskData), &diskData);
@@ -673,7 +769,71 @@ struct Engine {
         glfwPollEvents();
     };
 };
-Engine engine;
+static void printUsage() {
+    cout << "BlackHole3D [--scene file.json] [--scientific] [--relativistic] [--capture out.png] [--help]\n"
+            "  --scene        load black_hole.scene_params/v1 (camera, disk, objects, Gravity)\n"
+            "  --scientific   planar RK4 compute shader (geodesic_scientific.comp), rs=1 units\n"
+            "  --relativistic scientific + Doppler/gravitational redshift disk shading\n"
+            "  --capture      render one frame, save the 200x150 compute image (.png/.bmp/.ppm), exit\n"
+            "  (no flags)     historical baseline: geodesic.comp legacyEulerStep\n";
+}
+
+static bool parseArgs(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--help" || a == "-h") {
+            printUsage();
+            return false;
+        } else if (a == "--scientific") {
+            g_config.scientific = true;
+        } else if (a == "--relativistic") {
+            g_config.scientific = true;
+            g_config.relativistic = true;
+        } else if (a == "--capture" && i + 1 < argc) {
+            g_config.capturePath = argv[++i];
+        } else if (a == "--scene" && i + 1 < argc) {
+            std::string err;
+            if (!bh::load_scene_params_json(argv[++i], g_config.scene, err)) {
+                cerr << "[ERROR] scene load failed: " << err << "\n";
+                return false;
+            }
+            g_config.sceneLoaded = true;
+        } else {
+            cerr << "[ERROR] unknown argument: " << a << "\n";
+            printUsage();
+            return false;
+        }
+    }
+    return true;
+}
+
+// Apply a loaded scene to the global baseline state (camera, black hole, objects, Gravity).
+static void applySceneToGlobals() {
+    const bh::SceneParams& sc = g_config.scene;
+    SagA = BlackHole(vec3(sc.bh_position_m[0], sc.bh_position_m[1], sc.bh_position_m[2]),
+                     static_cast<float>(sc.mass_kg));
+    camera.radius = static_cast<float>(sc.camera.radius_m);
+    camera.azimuth = static_cast<float>(sc.camera.azimuth_rad);
+    camera.elevation = static_cast<float>(sc.camera.elevation_rad);
+    camera.fovYDeg = static_cast<float>(sc.camera.fov_y_deg);
+    camera.sceneTarget = vec3(sc.camera.target_x, sc.camera.target_y, sc.camera.target_z);
+    camera.update();
+    Gravity = sc.gravity;
+    if (!sc.objects.empty()) {
+        objects.clear();
+        for (const bh::SceneObject& o : sc.objects) {
+            ObjectData od;
+            od.posRadius = vec4(o.pos_m[0], o.pos_m[1], o.pos_m[2], o.radius_m);
+            od.color = vec4(o.color_rgba[0], o.color_rgba[1], o.color_rgba[2], o.color_rgba[3]);
+            od.mass = static_cast<float>(o.mass_kg);
+            objects.push_back(od);
+        }
+    }
+    cout << "[INFO] scene loaded: " << sc.bh_name << " rs=" << SagA.r_s << " m, camera R=" << camera.radius
+         << " az=" << camera.azimuth << " el=" << camera.elevation << ", " << objects.size()
+         << " objects, Gravity " << (Gravity ? "ON" : "OFF") << "\n";
+}
+
 void setupCameraCallbacks(GLFWwindow* window) {
     glfwSetWindowUserPointer(window, &camera);
 
@@ -700,7 +860,14 @@ void setupCameraCallbacks(GLFWwindow* window) {
 
 
 // -- MAIN -- //
-int main() {
+int main(int argc, char** argv) {
+    if (!parseArgs(argc, argv)) {
+        return (argc > 1 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) ? 0 : 2;
+    }
+    if (g_config.sceneLoaded) {
+        applySceneToGlobals();
+    }
+    Engine engine;  // constructed after the CLI so the compute program matches the mode
     setupCameraCallbacks(engine.window);
 
     auto t0 = Clock::now();
@@ -755,7 +922,7 @@ int main() {
         }
         // 5) overlay the bent grid
         mat4 view = lookAt(camera.position(), camera.target, vec3(0,1,0));
-        mat4 proj = perspective(radians(60.0f), float(engine.COMPUTE_WIDTH)/engine.COMPUTE_HEIGHT, 1e9f, 1e14f);
+        mat4 proj = perspective(radians(camera.fovYDeg), float(engine.COMPUTE_WIDTH)/engine.COMPUTE_HEIGHT, 1e9f, 1e14f);
         mat4 viewProj = proj * view;
         engine.drawGrid(viewProj);
 
@@ -763,6 +930,47 @@ int main() {
         glViewport(0, 0, engine.WIDTH, engine.HEIGHT);
         engine.dispatchCompute(camera);
         engine.drawFullScreenQuad();
+
+        if (!g_config.capturePath.empty()) {
+            // Golden-image capture: read back the raw compute texture. The fullscreen
+            // quad maps texture row 0 to the BOTTOM of the window (texcoord v = 0), so
+            // rows are flipped to produce the on-screen orientation (row 0 = top),
+            // which is also the bh_render_cpu convention → 1:1 GPU/CPU comparison.
+            glFinish();
+            const int w = engine.textureWidth, h = engine.textureHeight;
+            std::vector<unsigned char> rgba(static_cast<std::size_t>(w) * h * 4);
+            glBindTexture(GL_TEXTURE_2D, engine.texture);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+            // Compose like the fullscreen pass: RGB weighted by alpha over the black clear colour.
+            std::vector<std::uint8_t> rgb8(static_cast<std::size_t>(w) * h * 3);
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    const std::size_t src = (static_cast<std::size_t>(h - 1 - y) * w + x) * 4;
+                    const std::size_t dst = (static_cast<std::size_t>(y) * w + x) * 3;
+                    const unsigned a = rgba[src + 3];
+                    for (int c = 0; c < 3; ++c) {
+                        rgb8[dst + c] = static_cast<std::uint8_t>((rgba[src + c] * a + 127u) / 255u);
+                    }
+                }
+            }
+            std::string err;
+            const std::string& out = g_config.capturePath;
+            const std::string ext = out.size() >= 4 ? out.substr(out.size() - 4) : "";
+            bool ok = false;
+            if (ext == ".png") ok = bh::image_io::write_png(out, w, h, rgb8, err);
+            else if (ext == ".bmp") ok = bh::image_io::write_bmp(out, w, h, rgb8, err);
+            else if (ext == ".ppm") ok = bh::image_io::write_ppm(out, w, h, rgb8, err);
+            else err = "unsupported capture extension (use .png, .bmp or .ppm)";
+            if (!ok) {
+                cerr << "[ERROR] capture failed: " << err << "\n";
+                glfwDestroyWindow(engine.window);
+                glfwTerminate();
+                return 1;
+            }
+            cout << "[INFO] captured " << w << "x" << h << " -> " << out << "\n";
+            break;
+        }
 
         // 6) present to screen
         glfwSwapBuffers(engine.window);

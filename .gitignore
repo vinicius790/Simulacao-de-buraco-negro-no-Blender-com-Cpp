@@ -64,6 +64,8 @@ install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
 _deps
+# The root Makefile is a hand-written convenience wrapper (not CMake output).
+!/Makefile
 
 ##### C++
 # Prerequisites

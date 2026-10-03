@@ -76,8 +76,14 @@ def build_disk(
     name: str = C.OBJ_DISK,
     n_radial: int = 48,
     n_angular: int = 128,
+    thickness_m: float = C.DISK_THICKNESS_M,
+    glow: float = 1.0,
 ):
-    """Create / replace the accretion disk object with emission material."""
+    """Create / replace the accretion disk object with emission material.
+
+    Geometry is generated in the C++ frame (pure helper, tested for parity) and
+    rotated into Blender's Z-up frame: the disk lies in Blender's XY plane.
+    """
     existing = bpy.data.objects.get(name)
     if existing is not None:
         mesh_old = existing.data
@@ -90,7 +96,7 @@ def build_disk(
     )
 
     mesh = bpy.data.meshes.new(name + "_Mesh")
-    mesh.from_pydata(verts, [], faces)
+    mesh.from_pydata([C.cpp_to_blender(v) for v in verts], [], faces)
     mesh.update()
 
     # UV layer
@@ -102,13 +108,26 @@ def build_disk(
     obj = bpy.data.objects.new(name, mesh)
     collection.objects.link(obj)
 
-    mat = materials.ensure_disk_material()
+    mat = materials.ensure_disk_material(
+        inner_factor=inner_factor, outer_factor=outer_factor, glow=glow
+    )
     if mesh.materials:
         mesh.materials[0] = mat
     else:
         mesh.materials.append(mat)
 
     obj.location = (0.0, 0.0, 0.0)
+
+    # Give the annulus the locked DiskUBO thickness (1e9 m ≈ 0.079 rs) so an
+    # edge-on camera (the default elevation π/2) sees a thin bright line, as a
+    # real thin disk would without lensing — a zero-thickness sheet vanishes.
+    thickness_geo = thickness_m / C.SAG_A_RS_M * rs
+    if thickness_geo > 0.0:
+        mod = obj.modifiers.new(name="BH_DiskThickness", type="SOLIDIFY")
+        mod.thickness = thickness_geo
+        mod.offset = 0.0  # centred on the equatorial plane
+        mod.use_even_offset = True
+    obj["bh_thickness_geo"] = thickness_geo
     obj["bh_role"] = "disk"
     obj["bh_inner_rs"] = inner_factor
     obj["bh_outer_rs"] = outer_factor

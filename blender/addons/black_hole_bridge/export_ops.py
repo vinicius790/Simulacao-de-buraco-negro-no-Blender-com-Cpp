@@ -1,6 +1,5 @@
-"""Operators: Build Full Scene, rebuild parts, JSON I/O, Bake Orbit Animation."""
-
-from __future__ import annotations
+"""Operators: Build Full Scene, rebuild parts, JSON I/O, camera animation presets,
+disk spin."""
 
 import math
 
@@ -10,12 +9,28 @@ from . import disk_mesh
 from . import grid_mesh
 from . import horizon
 from . import json_io
+from . import materials
 from . import scene_builder
 
-import bpy
-from bpy.props import StringProperty
-from bpy.types import Operator
-from bpy_extras.io_utils import ExportHelper, ImportHelper
+try:
+    import bpy
+    from bpy.props import StringProperty
+    from bpy.types import Operator
+    from bpy_extras.io_utils import ExportHelper, ImportHelper
+except ImportError:
+    bpy = None  # type: ignore
+
+    def StringProperty(**_kw):  # type: ignore[no-redef]
+        return None
+
+    class Operator:  # type: ignore[no-redef]
+        """Headless placeholder so the module imports without bpy."""
+
+    class ExportHelper:  # type: ignore[no-redef]
+        """Headless placeholder so the module imports without bpy."""
+
+    class ImportHelper:  # type: ignore[no-redef]
+        """Headless placeholder so the module imports without bpy."""
 
 
 class BH_OT_build_full_scene(Operator):
@@ -29,7 +44,7 @@ class BH_OT_build_full_scene(Operator):
 
     def execute(self, context):
         info = scene_builder.build_full_scene(context)
-        self.report({"INFO"}, info["note"])
+        self.report({"WARNING"} if info.get("camera_inside_disk") else {"INFO"}, info["note"])
         return {"FINISHED"}
 
 
@@ -47,6 +62,8 @@ class BH_OT_rebuild_disk(Operator):
             rs=C.RS_GEO,
             inner_factor=s.disk_inner_factor,
             outer_factor=s.disk_outer_factor,
+            thickness_m=s.disk_thickness_m,
+            glow=s.disk_glow,
         )
         self.report({"INFO"}, "Disk rebuilt (amber gradient)")
         return {"FINISHED"}
@@ -93,8 +110,11 @@ class BH_OT_align_camera(Operator):
 
 class BH_OT_bake_orbit_animation(Operator):
     bl_idname = "bh.bake_orbit_animation"
-    bl_label = "Bake Orbit Animation"
-    bl_description = "Keyframe turntable azimuth orbit (C++ Camera style)"
+    bl_label = "Bake Camera Animation"
+    bl_description = (
+        "Keyframe the orbit camera along the selected preset "
+        "(TURNTABLE = legacy azimuth sweep, ELEVATION_SWEEP, DOLLY, SPIRAL)"
+    )
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -102,18 +122,64 @@ class BH_OT_bake_orbit_animation(Operator):
         coll = scene_builder.ensure_collections()[C.COLL_CAMERA]
         _empty, cam = camera_orbit.ensure_orbit_rig(coll)
         radius = camera_orbit.geo_radius_from_settings(s)
-        n = camera_orbit.bake_orbit_animation(
+        try:
+            path_fn = camera_orbit.path_fn_from_settings(s, radius)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        # FOV + static params first; bake_camera_path then keyframes location.
+        camera_orbit.align_camera_from_params(
+            cam, radius, s.camera_azimuth, s.camera_elevation, s.camera_fov_y_deg
+        )
+        n = camera_orbit.bake_camera_path(
             cam,
-            radius=radius,
-            elevation=s.camera_elevation,
+            path_fn,
             fps=int(s.anim_fps),
             duration_s=s.anim_duration_s,
-            azimuth_start=s.camera_azimuth,
-            azimuth_end=s.camera_azimuth + 2.0 * math.pi,
             scene=context.scene,
         )
         context.scene.camera = cam
-        self.report({"INFO"}, f"Baked {n} frames @ {int(s.anim_fps)} fps")
+        self.report(
+            {"INFO"},
+            f"Baked {n} frames @ {int(s.anim_fps)} fps — {s.anim_mode} / {s.anim_easing}",
+        )
+        return {"FINISHED"}
+
+
+class BH_OT_bake_disk_spin(Operator):
+    bl_idname = "bh.bake_disk_spin"
+    bl_label = "Bake Disk Spin"
+    bl_description = (
+        "Rotate the disk texture (UV.u) by N turns over the scene frame range; "
+        "optional turbulence modulates brightness only — hue stays (1, r, 0.2)"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        s = context.scene.bh_bridge
+        if bpy.data.objects.get(C.OBJ_DISK) is None:
+            coll = scene_builder.ensure_collections()[C.COLL_DISK]
+            disk_mesh.build_disk(
+                coll,
+                rs=C.RS_GEO,
+                inner_factor=s.disk_inner_factor,
+                    outer_factor=s.disk_outer_factor,
+                thickness_m=s.disk_thickness_m,
+                glow=s.disk_glow,
+            )
+        mat = materials.ensure_disk_material(
+            spin=True,
+            turbulence=float(s.disk_turbulence),
+            inner_factor=s.disk_inner_factor,
+            outer_factor=s.disk_outer_factor,
+            glow=s.disk_glow,
+        )
+        span = materials.set_disk_spin_keyframes(mat, context.scene, float(s.disk_spin_turns))
+        self.report(
+            {"INFO"},
+            f"Disk spin: {s.disk_spin_turns:.2f} turn(s) over {span} frames, "
+            f"turbulence {s.disk_turbulence:.2f}",
+        )
         return {"FINISHED"}
 
 
@@ -174,6 +240,7 @@ ALL_OPERATORS = (
     BH_OT_rebuild_horizon,
     BH_OT_align_camera,
     BH_OT_bake_orbit_animation,
+    BH_OT_bake_disk_spin,
     BH_OT_export_scene_params,
     BH_OT_import_scene_params,
     BH_OT_export_scene_params_quick,
