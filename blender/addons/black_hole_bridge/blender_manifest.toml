@@ -1,0 +1,15 @@
+schema_version = "1.0.0"
+
+id = "black_hole_bridge"
+version = "1.0.0"
+name = "Black Hole Bridge"
+tagline = "Style-locked Sag A* Blender frontend for the C++ black_hole simulator"
+maintainer = "black_hole package"
+type = "add-on"
+
+blender_version_min = "4.0.0"
+
+license = ["SPDX:MIT"]
+
+[permissions]
+files = "Export/import scene_params JSON for the C++ simulator"

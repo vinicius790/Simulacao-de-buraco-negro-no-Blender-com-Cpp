@@ -1,0 +1,82 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Default Release (OpenGL ON)",
+      "binaryDir": "${sourceDir}/build/default",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON",
+        "BLACK_HOLE_BUILD_GL": "ON"
+      }
+    },
+    {
+      "name": "scientific",
+      "displayName": "Scientific-only (no OpenGL)",
+      "binaryDir": "${sourceDir}/build/scientific",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON",
+        "BLACK_HOLE_BUILD_GL": "OFF"
+      }
+    },
+    {
+      "name": "vcpkg-release",
+      "displayName": "Release with vcpkg",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build/vcpkg-release",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "ci-linux",
+      "displayName": "CI Linux (full GL)",
+      "inherits": "default",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ci-linux"
+    },
+    {
+      "name": "ci-scientific",
+      "displayName": "CI Linux scientific-only",
+      "inherits": "scientific",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ci-scientific"
+    }
+  ],
+  "buildPresets": [
+    { "name": "default", "configurePreset": "default" },
+    { "name": "scientific", "configurePreset": "scientific" },
+    { "name": "vcpkg-release", "configurePreset": "vcpkg-release" },
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "ci-linux", "configurePreset": "ci-linux" },
+    { "name": "ci-scientific", "configurePreset": "ci-scientific" }
+  ],
+  "testPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "scientific",
+      "configurePreset": "scientific",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

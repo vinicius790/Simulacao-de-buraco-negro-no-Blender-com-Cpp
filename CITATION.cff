@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+title: black_hole — realtime geodesic renderer (engineering baseline package)
+message: >-
+  If you use this software, please cite it using these metadata.
+  Author names are placeholders — replace before formal publication.
+type: software
+authors:
+  - name: "Unknown / project maintainers"
+    alias: TODO
+  - name: "Upstream original author (kavan010)"
+    alias: TODO-confirm
+repository-code: "https://github.com/kavan010/black_hole"
+url: "https://github.com/kavan010/black_hole"
+abstract: >-
+  C++/OpenGL realtime null-geodesic visualization inspired by Sagittarius A*.
+  Default path preserves a historical visual/physics baseline; scientific
+  corrections are specified as a separate optional mode. Not a full GRMHD code.
+keywords:
+  - black-hole
+  - gravitational-lensing
+  - geodesic
+  - OpenGL
+  - compute-shader
+license: TBD
+# license-url: leave unset until a real LICENSE is chosen by copyright holders

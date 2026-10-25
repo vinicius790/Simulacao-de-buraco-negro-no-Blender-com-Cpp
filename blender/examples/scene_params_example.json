@@ -1,0 +1,52 @@
+{
+  "schema": "black_hole.scene_params/v1",
+  "notes": "Matches DiskUBO + Camera fields conceptually used by black_hole.cpp. Loaded by bh::load_scene_params_json (hand-rolled parser). Synced with blender/examples/scene_params_example.json.",
+  "gravity": false,
+  "black_hole": {
+    "name": "Sagittarius A*",
+    "mass_kg": 8.54e36,
+    "r_s_m": 12690000000.0,
+    "position_m": [0.0, 0.0, 0.0]
+  },
+  "disk": {
+    "inner_radius_m": 27918000000.0,
+    "outer_radius_m": 65988000000.0,
+    "inner_factor_rs": 2.2,
+    "outer_factor_rs": 5.2,
+    "thickness_m": 1.0e9,
+    "disk_num": 2.0
+  },
+  "camera": {
+    "radius_m": 63419400000.0,
+    "azimuth_rad": 0.0,
+    "elevation_rad": 1.5707963267948966,
+    "fov_y_deg": 60.0,
+    "target_m": [0.0, 0.0, 0.0]
+  },
+  "objects": [
+    {
+      "pos_m": [4.0e11, 0.0, 0.0],
+      "radius_m": 4.0e10,
+      "color_rgba": [1.0, 1.0, 0.0, 1.0],
+      "mass_kg": 1.98892e30
+    },
+    {
+      "pos_m": [0.0, 0.0, 4.0e11],
+      "radius_m": 4.0e10,
+      "color_rgba": [1.0, 0.0, 0.0, 1.0],
+      "mass_kg": 1.98892e30
+    },
+    {
+      "pos_m": [0.0, 0.0, 0.0],
+      "radius_m": 12690000000.0,
+      "color_rgba": [0.0, 0.0, 0.0, 1.0],
+      "mass_kg": 8.54e36
+    }
+  ],
+  "render_baseline": {
+    "window": [800, 600],
+    "compute": [200, 150],
+    "integrator": "legacyEulerStep",
+    "scientific_default": false
+  }
+}

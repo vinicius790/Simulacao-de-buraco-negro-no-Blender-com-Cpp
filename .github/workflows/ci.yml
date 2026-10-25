@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  scientific-headless:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Configure scientific-only
+        run: cmake --preset ci-scientific
+
+      - name: Build
+        run: cmake --build --preset ci-scientific
+
+      - name: Test
+        run: ctest --test-dir build/ci-scientific --output-on-failure
+
+  linux-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            libglew-dev \
+            libglfw3-dev \
+            libglm-dev \
+            libgl1-mesa-dev \
+            glslang-tools
+
+      - name: Configure
+        run: cmake --preset ci-linux
+
+      - name: Build
+        run: cmake --build --preset ci-linux
+
+      - name: Static regression tests
+        run: ctest --test-dir build/ci-linux --output-on-failure
+
+      - name: Validate GLSL
+        run: cmake --build build/ci-linux --target validate_shaders

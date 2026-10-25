@@ -1,0 +1,194 @@
+#version 430
+// SCIENTIFIC GPU INTEGRATOR — NOT wired to BlackHole3D by default.
+//
+// This file is a REFERENCE / FUTURE mode. Root geodesic.comp (legacyEulerStep)
+// remains the production path used by black_hole.cpp. Do NOT replace it.
+//
+// Intent:
+//   True classical RK4 null-geodesic march in Schwarzschild coordinates with
+//   geometric units rs = 1 (lengths in units of the Schwarzschild radius).
+//   RHS uses the corrected Christoffel factor r*f on angular centrifugal terms
+//   (legacy geodesic.comp omits f — see docs/FISICA_SCHWARZSCHILD.md).
+//
+// Status gates before any production enable:
+//   1. CPU reference tests pass (tests/test_scientific_ref.cpp)
+//   2. CPU↔GPU trajectory agreement measured with documented tolerances
+//   3. Explicit mode switch exists (default MUST remain geodesic.comp)
+//
+// Coordinate chart: Schwarzschild (t, r, θ, φ), signature (−,+,+,+).
+// Kerr / spin: NOT implemented.
+// Novikov–Thorne disk emission: NOT implemented (geometric annulus only).
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 0, rgba8) writeonly uniform image2D outImage;
+
+layout(std140, binding = 1) uniform Camera {
+    vec3 camPos;     float _pad0;
+    vec3 camRight;   float _pad1;
+    vec3 camUp;      float _pad2;
+    vec3 camForward; float _pad3;
+    float tanHalfFov;
+    float aspect;
+    int moving;
+    int   _pad4;
+} cam;
+
+layout(std140, binding = 2) uniform Disk {
+    float disk_r1;
+    float disk_r2;
+    float disk_num;
+    float thickness;
+};
+
+// Geometric units: rs = 1. Host must scale camera / disk into these units
+// before upload when this shader is eventually enabled.
+const float RS = 1.0;
+const float D_LAMBDA = 0.05;      // affine step in units of rs
+const float ESCAPE_R = 1.0e4;     // escape in units of rs
+const int   MAX_STEPS = 8000;
+
+struct Ray {
+    float r, theta, phi;
+    float dr, dtheta, dphi;
+    float E, L;
+    vec3  cart;  // Cartesian embedding for hit tests
+};
+
+float lapse(float r) {
+    return 1.0 - RS / r;
+}
+
+void syncCart(inout Ray ray) {
+    float st = sin(ray.theta);
+    ray.cart = vec3(
+        ray.r * st * cos(ray.phi),
+        ray.r * st * sin(ray.phi),
+        ray.r * cos(ray.theta)
+    );
+}
+
+Ray initRay(vec3 pos, vec3 dir) {
+    Ray ray;
+    ray.r     = length(pos);
+    ray.theta = acos(clamp(pos.z / ray.r, -1.0, 1.0));
+    ray.phi   = atan(pos.y, pos.x);
+
+    float st = sin(ray.theta);
+    float ct = cos(ray.theta);
+    float sp = sin(ray.phi);
+    float cp = cos(ray.phi);
+
+    // Direction projected into spherical basis (same convention as geodesic.comp).
+    ray.dr     = st * cp * dir.x + st * sp * dir.y + ct * dir.z;
+    ray.dtheta = (ct * cp * dir.x + ct * sp * dir.y - st * dir.z) / ray.r;
+    ray.dphi   = (-sp * dir.x + cp * dir.y) / (ray.r * max(st, 1e-8));
+
+    ray.L = ray.r * ray.r * st * ray.dphi;
+    float f = lapse(ray.r);
+    float dt = sqrt(max((ray.dr * ray.dr) / f
+              + ray.r * ray.r * (ray.dtheta * ray.dtheta + st * st * ray.dphi * ray.dphi), 0.0));
+    ray.E = f * dt;
+    syncCart(ray);
+    return ray;
+}
+
+// Scientific geodesic RHS — corrected + r*f*(dθ² + sin²θ dφ²).
+void geodesicRHS(Ray ray, out vec3 d1, out vec3 d2) {
+    float r = ray.r;
+    float theta = ray.theta;
+    float dr = ray.dr;
+    float dtheta = ray.dtheta;
+    float dphi = ray.dphi;
+    float f = lapse(r);
+    float dt = (f > 0.0) ? (ray.E / f) : 0.0;
+    float st = sin(theta);
+    float ct = cos(theta);
+
+    d1 = vec3(dr, dtheta, dphi);
+    d2.x = -(RS / (2.0 * r * r)) * f * dt * dt
+         + (RS / (2.0 * r * r * max(f, 1e-12))) * dr * dr
+         + r * f * (dtheta * dtheta + st * st * dphi * dphi);  // ← f factor (scientific)
+    d2.y = -2.0 * dr * dtheta / r + st * ct * dphi * dphi;
+    d2.z = -2.0 * dr * dphi / r - 2.0 * ct / max(st, 1e-8) * dtheta * dphi;
+}
+
+void applyState(inout Ray ray, vec3 pos, vec3 vel) {
+    ray.r = pos.x; ray.theta = pos.y; ray.phi = pos.z;
+    ray.dr = vel.x; ray.dtheta = vel.y; ray.dphi = vel.z;
+}
+
+// True classical RK4 (4 RHS evaluations). NOT the legacy single-stage Euler.
+void rk4Step(inout Ray ray, float dL) {
+    vec3 k1a, k1b, k2a, k2b, k3a, k3b, k4a, k4b;
+    vec3 y0 = vec3(ray.r, ray.theta, ray.phi);
+    vec3 v0 = vec3(ray.dr, ray.dtheta, ray.dphi);
+
+    geodesicRHS(ray, k1a, k1b);
+
+    Ray r2 = ray;
+    applyState(r2, y0 + 0.5 * dL * k1a, v0 + 0.5 * dL * k1b);
+    geodesicRHS(r2, k2a, k2b);
+
+    Ray r3 = ray;
+    applyState(r3, y0 + 0.5 * dL * k2a, v0 + 0.5 * dL * k2b);
+    geodesicRHS(r3, k3a, k3b);
+
+    Ray r4 = ray;
+    applyState(r4, y0 + dL * k3a, v0 + dL * k3b);
+    geodesicRHS(r4, k4a, k4b);
+
+    vec3 dy = (dL / 6.0) * (k1a + 2.0 * k2a + 2.0 * k3a + k4a);
+    vec3 dv = (dL / 6.0) * (k1b + 2.0 * k2b + 2.0 * k3b + k4b);
+    applyState(ray, y0 + dy, v0 + dv);
+    syncCart(ray);
+}
+
+bool crossesEquatorialPlane(vec3 oldPos, vec3 newPos) {
+    // Y-up: disk in XZ. Cross when Y changes sign and cylindrical ρ in annulus.
+    bool crossed = (oldPos.y * newPos.y < 0.0);
+    if (!crossed) return false;
+    float rho = length(vec2(newPos.x, newPos.z));
+    return rho >= disk_r1 && rho <= disk_r2;
+}
+
+void main() {
+    // NOTE: resolution here is illustrative for the scientific scaffold.
+    // Production BlackHole3D still hardcodes 200×150 via geodesic.comp.
+    const int WIDTH  = 200;
+    const int HEIGHT = 150;
+
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    if (pix.x >= WIDTH || pix.y >= HEIGHT) return;
+
+    float u = (2.0 * (pix.x + 0.5) / float(WIDTH)  - 1.0) * cam.aspect * cam.tanHalfFov;
+    float v = (1.0 - 2.0 * (pix.y + 0.5) / float(HEIGHT)) * cam.tanHalfFov;
+    vec3 dir = normalize(u * cam.camRight - v * cam.camUp + cam.camForward);
+    Ray ray = initRay(cam.camPos, dir);
+
+    vec4 color = vec4(0.0);
+    vec3 prevPos = ray.cart;
+    bool hitBlackHole = false;
+    bool hitDisk = false;
+
+    for (int i = 0; i < MAX_STEPS; ++i) {
+        if (ray.r <= RS * 1.001) { hitBlackHole = true; break; }
+        rk4Step(ray, D_LAMBDA);
+        if (crossesEquatorialPlane(prevPos, ray.cart)) { hitDisk = true; break; }
+        prevPos = ray.cart;
+        if (ray.r > ESCAPE_R) break;
+        // Soft pole guard
+        if (ray.theta < 1e-3 || ray.theta > 3.14159265 - 1e-3) break;
+    }
+
+    if (hitDisk) {
+        // Same aesthetic as geodesic.comp: diskColor = vec3(1, r_norm, 0.2)
+        float r_norm = length(ray.cart) / max(disk_r2, 1e-6);
+        color = vec4(1.0, r_norm, 0.2, r_norm);
+    } else if (hitBlackHole) {
+        color = vec4(0.0, 0.0, 0.0, 1.0);
+    } else {
+        color = vec4(0.0);
+    }
+
+    imageStore(outImage, pix, color);
+}
