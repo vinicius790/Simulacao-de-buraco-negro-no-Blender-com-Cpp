@@ -9,15 +9,25 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(BLACK_HOLE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(BLACK_HOLE_BUILD_GL "Build OpenGL visualization targets (BlackHole2D/3D)" ON)
 
+find_package(OpenMP REQUIRED)
+
 function(black_hole_configure_target target_name)
     target_compile_features(${target_name} PRIVATE cxx_std_17)
     if(MSVC)
-        target_compile_options(${target_name} PRIVATE /W4 /permissive-)
+        target_compile_options(${target_name} PRIVATE
+            /W4 /permissive-
+            $<$<NOT:$<CONFIG:Debug>>:/O2>
+            $<$<NOT:$<CONFIG:Debug>>:/arch:AVX2>
+        )
         if(BLACK_HOLE_WARNINGS_AS_ERRORS)
             target_compile_options(${target_name} PRIVATE /WX)
         endif()
     else()
-        target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(${target_name} PRIVATE
+            -Wall -Wextra -Wpedantic
+            $<$<NOT:$<CONFIG:Debug>>:-O3>
+            $<$<NOT:$<CONFIG:Debug>>:-march=native>
+        )
         if(BLACK_HOLE_WARNINGS_AS_ERRORS)
             target_compile_options(${target_name} PRIVATE -Werror)
         endif()
@@ -38,11 +48,28 @@ target_include_directories(bh_scientific
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+target_link_libraries(bh_scientific
+    PUBLIC
+        OpenMP::OpenMP_CXX
+)
 black_hole_configure_target(bh_scientific)
 
 add_executable(test_scientific_ref tests/test_scientific_ref.cpp)
 target_link_libraries(test_scientific_ref PRIVATE bh_scientific)
 black_hole_configure_target(test_scientific_ref)
+
+find_package(GTest QUIET)
+add_executable(test_relativistic tests/test_relativistic.cpp)
+if(TARGET GTest::gtest AND TARGET GTest::gtest_main)
+    target_link_libraries(test_relativistic PRIVATE bh_scientific GTest::gtest GTest::gtest_main)
+    target_compile_definitions(test_relativistic PRIVATE BH_USE_GTEST)
+elseif(TARGET GTest::GTest AND TARGET GTest::Main)
+    target_link_libraries(test_relativistic PRIVATE bh_scientific GTest::GTest GTest::Main)
+    target_compile_definitions(test_relativistic PRIVATE BH_USE_GTEST)
+else()
+    target_link_libraries(test_relativistic PRIVATE bh_scientific)
+endif()
+black_hole_configure_target(test_relativistic)
 
 add_executable(quickstart_scientific examples/quickstart_scientific.cpp)
 target_link_libraries(quickstart_scientific PRIVATE bh_scientific)
@@ -51,6 +78,10 @@ black_hole_configure_target(quickstart_scientific)
 add_executable(bh_scene_dump tools/bh_scene_dump.cpp)
 target_link_libraries(bh_scene_dump PRIVATE bh_scientific)
 black_hole_configure_target(bh_scene_dump)
+
+add_executable(bench_raytracing benchmarks/bench_raytracing.cpp)
+target_link_libraries(bench_raytracing PRIVATE bh_scientific)
+black_hole_configure_target(bench_raytracing)
 
 # ---------------------------------------------------------------------------
 # Optional OpenGL visualization targets
@@ -97,7 +128,7 @@ if(BLACK_HOLE_BUILD_GL)
 
     find_package(OpenGL REQUIRED)
 
-    set(DEPS glfw GLEW::GLEW glm::glm OpenGL::GL)
+    set(DEPS glfw GLEW::GLEW glm::glm OpenGL::GL OpenMP::OpenMP_CXX)
 
     add_executable(BlackHole2D 2D_lensing.cpp)
     target_link_libraries(BlackHole2D PRIVATE ${DEPS})
@@ -159,4 +190,6 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME scientific_ref COMMAND test_scientific_ref)
+    add_test(NAME test_relativistic COMMAND test_relativistic)
+    add_test(NAME bench_raytracing COMMAND bench_raytracing)
 endif()

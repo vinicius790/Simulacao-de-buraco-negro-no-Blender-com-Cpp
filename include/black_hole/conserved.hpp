@@ -1,19 +1,23 @@
-#pragma once
-// Conserved quantities and null-condition diagnostics for Schwarzschild null geodesics.
+#ifndef INCLUDE_BLACK_HOLE_CONSERVED_HPP_
+#define INCLUDE_BLACK_HOLE_CONSERVED_HPP_
+// Conserved quantities and null-condition diagnostics for
+// Schwarzschild null geodesics.
+
+#include <cmath>
 
 #include "black_hole/ray_state.hpp"
 #include "black_hole/schwarzschild.hpp"
 
 namespace bh {
 
-/// Angular momentum about the polar axis: L = r² sinθ dφ/dλ (legacy convention).
+/// Angular momentum about polar axis: L = r² sinθ dφ/dλ (legacy convention).
 inline double angular_momentum(const RayState& ray) {
     return ray.r * ray.r * std::sin(ray.theta) * ray.dphi;
 }
 
 /// Energy-like conserved quantity from the *correct* null condition:
 /// E = sqrt( (dr)² + f r²(dθ² + sin²θ dφ²) ), so g_μν k^μ k^ν = 0 with dt=E/f.
-/// Differs from the legacy GPU seed E = f * sqrt((dr)²/f + …); see conserved.cpp.
+/// Differs from legacy GPU seed E = f * sqrt((dr)²/f + …); see conserved.cpp.
 double energy_from_null_condition(const RayState& ray, double rs);
 
 /// Null-constraint residual g_μν k^μ k^ν (should be ≈ 0 for a null geodesic).
@@ -26,3 +30,5 @@ inline double null_constraint_abs(const RayState& ray, double rs) {
 }
 
 }  // namespace bh
+
+#endif  // INCLUDE_BLACK_HOLE_CONSERVED_HPP_

@@ -5,6 +5,10 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <vector>
 #include <iostream>
+#include <cstddef>
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
 
 const char* vertexShaderSource = R"glsl(
 #version 330 core
@@ -656,7 +660,12 @@ std::vector<float> UpdateGridVertices(std::vector<float> vertices, const std::ve
         }
     }
 
-    for (size_t i = 0; i < vertices.size(); i += 3) {
+    const std::ptrdiff_t num_vertices = static_cast<std::ptrdiff_t>(vertices.size() / 3);
+#if defined(_OPENMP)
+    #pragma omp parallel for schedule(static)
+#endif
+    for (std::ptrdiff_t vi = 0; vi < num_vertices; ++vi) {
+        std::size_t i = static_cast<std::size_t>(vi * 3);
         float x = vertices[i];
         float z = vertices[i + 2];
 

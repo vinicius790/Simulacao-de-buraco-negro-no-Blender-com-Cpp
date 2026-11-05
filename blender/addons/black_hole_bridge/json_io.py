@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from . import constants as C
+from . import relativistic
 
 
 def build_params_dict(
@@ -27,8 +28,15 @@ def build_params_dict(
     anim_fps: int = C.ANIM_FPS,
     anim_duration_s: float = C.ANIM_DURATION_S,
     use_geo_units: bool = True,
+    impact_factor_rs: float = C.DEFAULT_IMPACT_FACTOR,
+    observer_radius_rs: float = C.DEFAULT_OBSERVER_RADIUS_FACTOR,
 ) -> dict[str, Any]:
     rs = C.rs_from_mass(mass_kg)
+    rel_props = relativistic.compute_relativistic_properties(
+        mass_kg=mass_kg,
+        impact_factor_rs=impact_factor_rs,
+        radius_factor_rs=observer_radius_rs,
+    )
     return {
         "schema": C.SCHEMA_ID,
         "notes": (
@@ -99,6 +107,23 @@ def build_params_dict(
             "scientific_default": False,
             "world_background": list(C.WORLD_BG_COLOR),
         },
+        "relativistic": {
+            "backend": rel_props.get("backend", "python (pure reference)"),
+            "schwarzschild_radius_m": float(rel_props["schwarzschild_radius_m"]),
+            "photon_sphere_radius_m": float(rel_props["photon_sphere_m"]),
+            "impact_parameter_m": float(rel_props["impact_parameter_m"]),
+            "impact_factor_rs": float(rel_props["impact_factor_rs"]),
+            "deflection_angle_rad": float(rel_props["deflection_angle_rad"]),
+            "deflection_angle_deg": float(rel_props["deflection_angle_deg"]),
+            "observer_radius_m": float(rel_props["observer_radius_m"]),
+            "observer_radius_rs": float(rel_props["observer_radius_rs"]),
+            "time_dilation_factor": float(rel_props["time_dilation_factor"]),
+            "formulas": {
+                "schwarzschild_radius": "r_s = 2 * G * M / c^2",
+                "light_deflection": "alpha = 4 * G * M / (c^2 * b) = 2 * r_s / b",
+                "time_dilation": "gamma = sqrt(1 - r_s / r)",
+            },
+        },
         "style_lock": "docs/ESTILO_VISUAL_SIMULACAO.md",
     }
 
@@ -122,6 +147,8 @@ def params_from_settings(s) -> dict[str, Any]:
         anim_fps=int(s.anim_fps),
         anim_duration_s=s.anim_duration_s,
         use_geo_units=s.use_geo_units,
+        impact_factor_rs=getattr(s, "impact_factor_rs", C.DEFAULT_IMPACT_FACTOR),
+        observer_radius_rs=getattr(s, "observer_radius_rs", C.DEFAULT_OBSERVER_RADIUS_FACTOR),
     )
 
 
@@ -131,6 +158,7 @@ def apply_params_to_settings(s, data: dict[str, Any]) -> None:
     cam = data.get("camera", {})
     grid = data.get("grid", {})
     anim = data.get("animation", {})
+    rel = data.get("relativistic", {})
 
     if "mass_kg" in bh:
         s.mass_kg = float(bh["mass_kg"])
@@ -147,6 +175,10 @@ def apply_params_to_settings(s, data: dict[str, Any]) -> None:
         rs = C.rs_from_mass(s.mass_kg)
         if rs > 0:
             s.camera_radius_rs = float(cam.get("radius_rs", cam["radius_m"] / rs))
+    if "impact_factor_rs" in rel and hasattr(s, "impact_factor_rs"):
+        s.impact_factor_rs = float(rel["impact_factor_rs"])
+    if "observer_radius_rs" in rel and hasattr(s, "observer_radius_rs"):
+        s.observer_radius_rs = float(rel["observer_radius_rs"])
     if "azimuth_rad" in cam:
         s.camera_azimuth = float(cam["azimuth_rad"])
     if "elevation_rad" in cam:

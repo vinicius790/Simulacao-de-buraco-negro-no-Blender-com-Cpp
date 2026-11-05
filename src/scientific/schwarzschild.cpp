@@ -2,6 +2,8 @@
 
 #include <cmath>
 
+#include "black_hole/relativistic.hpp"
+
 namespace bh {
 
 double lapse_factor(double r, double rs) {
@@ -9,6 +11,15 @@ double lapse_factor(double r, double rs) {
         return 0.0;
     }
     return 1.0 - rs / r;
+}
+
+double time_dilation_factor(double r, double rs) {
+    const double f = lapse_factor(r, rs);
+    return (f > 0.0) ? std::sqrt(f) : 0.0;
+}
+
+double time_dilation_factor_si(double mass_kg, double radius_m) {
+    return black_hole::time_dilation_factor(mass_kg, radius_m);
 }
 
 MetricComponents metric_at(double r, double theta, double rs) {

@@ -1,7 +1,13 @@
 #include "black_hole/integrator_rk4.hpp"
-#include "black_hole/schwarzschild.hpp"
 
 #include <cmath>
+#include <cstddef>
+
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
+#include "black_hole/schwarzschild.hpp"
 
 namespace bh {
 namespace {
@@ -15,7 +21,8 @@ void apply_state(RayState& ray, const double y[6]) {
     ray.dphi = y[5];
 }
 
-void add_scaled(const double a[6], const double b[6], double factor, double out[6]) {
+void add_scaled(const double a[6], const double b[6],
+                double factor, double out[6]) {
     for (int i = 0; i < 6; ++i) {
         out[i] = a[i] + b[i] * factor;
     }
@@ -70,7 +77,8 @@ void euler_step(RayState& ray, double d_lambda, double rs) {
 }
 
 void rk4_step(RayState& ray, double d_lambda, double rs) {
-    const double y0[6] = {ray.r, ray.theta, ray.phi, ray.dr, ray.dtheta, ray.dphi};
+    const double y0[6] = {
+        ray.r, ray.theta, ray.phi, ray.dr, ray.dtheta, ray.dphi};
     double k1[6], k2[6], k3[6], k4[6], temp[6];
 
     geodesic_rhs(ray, rs, k1);
@@ -90,13 +98,67 @@ void rk4_step(RayState& ray, double d_lambda, double rs) {
     apply_state(r4, temp);
     geodesic_rhs(r4, rs, k4);
 
-    ray.r += (d_lambda / 6.0) * (k1[0] + 2.0 * k2[0] + 2.0 * k3[0] + k4[0]);
-    ray.theta += (d_lambda / 6.0) * (k1[1] + 2.0 * k2[1] + 2.0 * k3[1] + k4[1]);
-    ray.phi += (d_lambda / 6.0) * (k1[2] + 2.0 * k2[2] + 2.0 * k3[2] + k4[2]);
-    ray.dr += (d_lambda / 6.0) * (k1[3] + 2.0 * k2[3] + 2.0 * k3[3] + k4[3]);
-    ray.dtheta += (d_lambda / 6.0) * (k1[4] + 2.0 * k2[4] + 2.0 * k3[4] + k4[4]);
-    ray.dphi += (d_lambda / 6.0) * (k1[5] + 2.0 * k2[5] + 2.0 * k3[5] + k4[5]);
+    const double sixth = d_lambda / 6.0;
+    ray.r += sixth * (k1[0] + 2.0 * k2[0] + 2.0 * k3[0] + k4[0]);
+    ray.theta += sixth * (k1[1] + 2.0 * k2[1] + 2.0 * k3[1] + k4[1]);
+    ray.phi += sixth * (k1[2] + 2.0 * k2[2] + 2.0 * k3[2] + k4[2]);
+    ray.dr += sixth * (k1[3] + 2.0 * k2[3] + 2.0 * k3[3] + k4[3]);
+    ray.dtheta += sixth * (k1[4] + 2.0 * k2[4] + 2.0 * k3[4] + k4[4]);
+    ray.dphi += sixth * (k1[5] + 2.0 * k2[5] + 2.0 * k3[5] + k4[5]);
     ray.sync_cartesian_from_spherical();
+}
+
+void rk4_step_batch(RayState* rays, std::size_t count,
+                    double d_lambda, double rs) {
+    if (!rays || count == 0) return;
+    const std::ptrdiff_t n = static_cast<std::ptrdiff_t>(count);
+#if defined(_OPENMP)
+    #pragma omp parallel for schedule(static)
+#endif
+    for (std::ptrdiff_t i = 0; i < n; ++i) {
+        rk4_step(rays[i], d_lambda, rs);
+    }
+}
+
+void integrate_rays_rk4(RayState* rays,
+                        std::size_t count,
+                        double d_lambda,
+                        double rs,
+                        int max_steps,
+                        double escape_r,
+                        BatchRayResult* results) {
+    if (!rays || count == 0) return;
+    const std::ptrdiff_t n = static_cast<std::ptrdiff_t>(count);
+#if defined(_OPENMP)
+    #pragma omp parallel for schedule(dynamic, 16)
+#endif
+    for (std::ptrdiff_t i = 0; i < n; ++i) {
+        RayState& ray = rays[i];
+        BatchRayResult res;
+        for (int step = 0; step < max_steps; ++step) {
+            if (ray.r <= rs) {
+                res.captured = true;
+                break;
+            }
+            if (ray.r >= escape_r) {
+                res.escaped = true;
+                break;
+            }
+            rk4_step(ray, d_lambda, rs);
+            res.steps_taken = step + 1;
+            if (ray.r <= rs) {
+                res.captured = true;
+                break;
+            }
+            if (ray.r >= escape_r) {
+                res.escaped = true;
+                break;
+            }
+        }
+        if (results) {
+            results[i] = res;
+        }
+    }
 }
 
 }  // namespace bh

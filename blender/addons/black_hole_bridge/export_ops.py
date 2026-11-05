@@ -10,6 +10,9 @@ from . import disk_mesh
 from . import grid_mesh
 from . import horizon
 from . import json_io
+from . import lensing
+from . import materials
+from . import relativistic
 from . import scene_builder
 
 import bpy
@@ -36,32 +39,113 @@ class BH_OT_build_full_scene(Operator):
 class BH_OT_rebuild_disk(Operator):
     bl_idname = "bh.rebuild_disk"
     bl_label = "Rebuild Disk"
-    bl_description = "Rebuild annular disk 2.2–5.2 rs with vec3(1,r,0.2) emission"
+    bl_description = "Rebuild annular disk 2.2–5.2 rs with vec3(1,r,0.2) emission and relativistic parameters"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
         s = context.scene.bh_bridge
         coll = scene_builder.ensure_collections()[C.COLL_DISK]
+        rel_props = relativistic.compute_relativistic_properties(
+            mass_kg=s.mass_kg,
+            impact_factor_rs=getattr(s, "impact_factor_rs", C.DEFAULT_IMPACT_FACTOR),
+            radius_factor_rs=getattr(s, "observer_radius_rs", C.DEFAULT_OBSERVER_RADIUS_FACTOR),
+        )
         disk_mesh.build_disk(
             coll,
             rs=C.RS_GEO,
             inner_factor=s.disk_inner_factor,
             outer_factor=s.disk_outer_factor,
+            time_dilation=rel_props["time_dilation_factor"],
+            deflection_angle=rel_props["deflection_angle_rad"],
         )
-        self.report({"INFO"}, "Disk rebuilt (amber gradient)")
+        self.report({"INFO"}, "Disk rebuilt (amber gradient + relativistic parameters)")
         return {"FINISHED"}
 
 
 class BH_OT_rebuild_horizon(Operator):
     bl_idname = "bh.rebuild_horizon"
     bl_label = "Rebuild Horizon"
-    bl_description = "Rebuild black sphere at rs_geo=1"
+    bl_description = "Rebuild black sphere at rs_geo=1 with relativistic shader values"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        s = context.scene.bh_bridge
         coll = scene_builder.ensure_collections()[C.COLL_CORE]
-        horizon.build_horizon(coll, rs=C.RS_GEO)
-        self.report({"INFO"}, "Horizon rebuilt")
+        rel_props = relativistic.compute_relativistic_properties(
+            mass_kg=s.mass_kg,
+            impact_factor_rs=getattr(s, "impact_factor_rs", C.DEFAULT_IMPACT_FACTOR),
+            radius_factor_rs=getattr(s, "observer_radius_rs", C.DEFAULT_OBSERVER_RADIUS_FACTOR),
+        )
+        horizon.build_horizon(
+            coll,
+            rs=C.RS_GEO,
+            time_dilation=rel_props["time_dilation_factor"],
+            deflection_angle=rel_props["deflection_angle_rad"],
+        )
+        self.report({"INFO"}, "Horizon rebuilt with relativistic parameters")
+        return {"FINISHED"}
+
+
+class BH_OT_rebuild_lensing(Operator):
+    bl_idname = "bh.rebuild_lensing"
+    bl_label = "Rebuild Lensing Sphere"
+    bl_description = "Rebuild refractive lensing shell at photon sphere (1.5 rs) driven by deflection angle"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        s = context.scene.bh_bridge
+        coll = scene_builder.ensure_collections()[C.COLL_CORE]
+        rel_props = relativistic.compute_relativistic_properties(
+            mass_kg=s.mass_kg,
+            impact_factor_rs=getattr(s, "impact_factor_rs", C.DEFAULT_IMPACT_FACTOR),
+            radius_factor_rs=getattr(s, "observer_radius_rs", C.DEFAULT_OBSERVER_RADIUS_FACTOR),
+        )
+        if getattr(s, "enable_lensing_sphere", True):
+            lensing.build_lensing_sphere(
+                coll,
+                rs=C.RS_GEO,
+                radius_factor=C.PHOTON_SPHERE_FACTOR,
+                deflection_angle=rel_props["deflection_angle_rad"],
+                time_dilation=rel_props["time_dilation_factor"],
+            )
+            self.report({"INFO"}, f"Lensing sphere rebuilt (alpha={rel_props['deflection_angle_rad']:.4f} rad)")
+        else:
+            lensing.remove_lensing_sphere()
+            self.report({"INFO"}, "Lensing sphere removed (disabled in settings)")
+        return {"FINISHED"}
+
+
+class BH_OT_update_relativistic(Operator):
+    bl_idname = "bh.update_relativistic_shaders"
+    bl_label = "Update Relativistic Shaders"
+    bl_description = "Recalculate Schwarzschild radius, deflection angle, and time dilation and update material shaders"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        s = context.scene.bh_bridge
+        rel_props = relativistic.compute_relativistic_properties(
+            mass_kg=s.mass_kg,
+            impact_factor_rs=getattr(s, "impact_factor_rs", C.DEFAULT_IMPACT_FACTOR),
+            radius_factor_rs=getattr(s, "observer_radius_rs", C.DEFAULT_OBSERVER_RADIUS_FACTOR),
+        )
+        if hasattr(s, "computed_rs_m"):
+            s.computed_rs_m = rel_props["schwarzschild_radius_m"]
+        if hasattr(s, "computed_deflection_rad"):
+            s.computed_deflection_rad = rel_props["deflection_angle_rad"]
+        if hasattr(s, "computed_time_dilation"):
+            s.computed_time_dilation = rel_props["time_dilation_factor"]
+
+        materials.update_material_relativistic_params(
+            rs=C.RS_GEO,
+            deflection_angle=rel_props["deflection_angle_rad"],
+            time_dilation=rel_props["time_dilation_factor"],
+        )
+        self.report(
+            {"INFO"},
+            f"Updated shaders: rs={rel_props['schwarzschild_radius_m']:.3e}m, "
+            f"alpha={rel_props['deflection_angle_rad']:.4f} rad, "
+            f"gamma={rel_props['time_dilation_factor']:.4f}",
+        )
         return {"FINISHED"}
 
 
@@ -172,6 +256,8 @@ ALL_OPERATORS = (
     BH_OT_build_full_scene,
     BH_OT_rebuild_disk,
     BH_OT_rebuild_horizon,
+    BH_OT_rebuild_lensing,
+    BH_OT_update_relativistic,
     BH_OT_align_camera,
     BH_OT_bake_orbit_animation,
     BH_OT_export_scene_params,

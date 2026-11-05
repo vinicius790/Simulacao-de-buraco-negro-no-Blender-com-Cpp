@@ -1,6 +1,8 @@
-#pragma once
+#ifndef INCLUDE_BLACK_HOLE_RAY_STATE_HPP_
+#define INCLUDE_BLACK_HOLE_RAY_STATE_HPP_
 // Double-precision null-geodesic state in Schwarzschild spherical coordinates.
-// Chart: (t, r, θ, φ) with affine parameter λ. Conserved E, L are stored on the ray.
+// Chart: (t, r, θ, φ) with affine parameter λ.
+// Conserved E, L are stored on the ray.
 
 #include <cmath>
 
@@ -20,7 +22,7 @@ struct RayState {
     double dtheta = 0.0;
     double dphi = 0.0;
 
-    // Conserved energy-like and angular-momentum quantities (see conserved.hpp).
+    // Conserved energy and angular-momentum quantities (see conserved.hpp).
     double E = 0.0;
     double L = 0.0;
 
@@ -35,3 +37,5 @@ RayState make_ray_from_cartesian(double px, double py, double pz,
                                  double rs);
 
 }  // namespace bh
+
+#endif  // INCLUDE_BLACK_HOLE_RAY_STATE_HPP_

@@ -5,6 +5,10 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <vector>
 #include <iostream>
+#include <cstddef>
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
 #define _USE_MATH_DEFINES
 #include <cmath>
 #ifndef M_PI
@@ -218,8 +222,15 @@ int main () {
         engine.run();
         SagA.draw();
 
+        const std::ptrdiff_t num_rays = static_cast<std::ptrdiff_t>(rays.size());
+#if defined(_OPENMP)
+        #pragma omp parallel for schedule(dynamic)
+#endif
+        for (std::ptrdiff_t i = 0; i < num_rays; ++i) {
+            rays[i].step(1.0f, SagA.r_s);
+        }
+
         for (auto& ray : rays) {
-            ray.step(1.0f, SagA.r_s);
             ray.draw(rays);
         }
 

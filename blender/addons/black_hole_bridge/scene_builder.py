@@ -10,7 +10,9 @@ from . import camera_orbit
 from . import disk_mesh
 from . import grid_mesh
 from . import horizon
+from . import lensing
 from . import materials
+from . import relativistic
 
 try:
     import bpy
@@ -81,12 +83,51 @@ def build_full_scene(context=None):
     rs = C.RS_GEO  # always build meshes in geo units for viewport usability
     materials.setup_world_background()
 
-    horizon.build_horizon(colls[C.COLL_CORE], rs=rs)
+    # Calculate relativistic properties from mass and observer/impact parameters
+    impact_factor = getattr(s, "impact_factor_rs", C.DEFAULT_IMPACT_FACTOR)
+    observer_factor = getattr(s, "observer_radius_rs", C.DEFAULT_OBSERVER_RADIUS_FACTOR)
+    rel_props = relativistic.compute_relativistic_properties(
+        mass_kg=s.mass_kg,
+        impact_factor_rs=impact_factor,
+        radius_factor_rs=observer_factor,
+    )
+    if hasattr(s, "computed_rs_m"):
+        s.computed_rs_m = rel_props["schwarzschild_radius_m"]
+    if hasattr(s, "computed_deflection_rad"):
+        s.computed_deflection_rad = rel_props["deflection_angle_rad"]
+    if hasattr(s, "computed_time_dilation"):
+        s.computed_time_dilation = rel_props["time_dilation_factor"]
+
+    horizon.build_horizon(
+        colls[C.COLL_CORE],
+        rs=rs,
+        time_dilation=rel_props["time_dilation_factor"],
+        deflection_angle=rel_props["deflection_angle_rad"],
+    )
+
+    if getattr(s, "enable_lensing_sphere", True):
+        lensing.build_lensing_sphere(
+            colls[C.COLL_CORE],
+            rs=rs,
+            radius_factor=C.PHOTON_SPHERE_FACTOR,
+            deflection_angle=rel_props["deflection_angle_rad"],
+            time_dilation=rel_props["time_dilation_factor"],
+        )
+    else:
+        lensing.remove_lensing_sphere()
+
     disk_mesh.build_disk(
         colls[C.COLL_DISK],
         rs=rs,
         inner_factor=s.disk_inner_factor,
         outer_factor=s.disk_outer_factor,
+        time_dilation=rel_props["time_dilation_factor"],
+        deflection_angle=rel_props["deflection_angle_rad"],
+    )
+    materials.update_material_relativistic_params(
+        rs=rs,
+        deflection_angle=rel_props["deflection_angle_rad"],
+        time_dilation=rel_props["time_dilation_factor"],
     )
     grid_mesh.build_grid(
         colls[C.COLL_GRID],
@@ -120,9 +161,12 @@ def build_full_scene(context=None):
         "camera": cam,
         "radius_geo": radius,
         "rs_geo": rs,
+        "relativistic": rel_props,
         "note": (
             "Meshes in geometric units (rs=1). "
-            f"Physical rs ≈ {C.rs_from_mass(s.mass_kg):.4e} m. "
+            f"Physical rs ≈ {rel_props['schwarzschild_radius_m']:.4e} m. "
+            f"Relativistic: deflection={rel_props['deflection_angle_rad']:.4f} rad, "
+            f"dilation={rel_props['time_dilation_factor']:.4f}. "
             "Disk shading = artistic approx of geodesic.comp; physics in C++."
         ),
     }

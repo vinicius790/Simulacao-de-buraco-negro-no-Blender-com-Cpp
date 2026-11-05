@@ -27,6 +27,7 @@ from bpy.types import Panel, PropertyGroup
 from . import constants as C
 from . import export_ops
 from . import grid_mesh
+from . import relativistic
 
 
 class BHBridgeSettings(PropertyGroup):
@@ -53,6 +54,23 @@ class BHBridgeSettings(PropertyGroup):
         name="Espessura disco (m)",
         default=C.DISK_THICKNESS_M,
         min=1.0,
+    )
+    impact_factor_rs: FloatProperty(
+        name="Parâmetro impacto (× rs)",
+        default=C.DEFAULT_IMPACT_FACTOR,
+        min=1.5,
+        description="Parâmetro de impacto b em múltiplos de rs para cálculo de deflexão",
+    )
+    observer_radius_rs: FloatProperty(
+        name="Raio observador (× rs)",
+        default=C.DEFAULT_OBSERVER_RADIUS_FACTOR,
+        min=1.01,
+        description="Raio r do observador em múltiplos de rs para dilatação temporal",
+    )
+    enable_lensing_sphere: BoolProperty(
+        name="Esfera de Lensing",
+        default=True,
+        description="Criar malha refrativa na esfera de fótons (1.5 rs) modulada por deflexão relativística",
     )
     use_geo_units: BoolProperty(
         name="Unidades geométricas (rs=1)",
@@ -133,7 +151,30 @@ class BH_PT_bridge_panel(Panel):
         row = box.row(align=True)
         row.operator(export_ops.BH_OT_rebuild_horizon.bl_idname)
         row.operator(export_ops.BH_OT_rebuild_disk.bl_idname)
+        row.operator(export_ops.BH_OT_rebuild_lensing.bl_idname)
         box.operator(grid_mesh.BH_OT_generate_grid_mesh.bl_idname)
+
+        box = layout.box()
+        box.label(text="Relatividade Geral & Lensing", icon="PHYSICS")
+        rel_props = relativistic.compute_relativistic_properties(
+            mass_kg=s.mass_kg,
+            impact_factor_rs=s.impact_factor_rs,
+            radius_factor_rs=s.observer_radius_rs,
+        )
+        box.label(text=f"Backend: {rel_props['backend']}")
+        box.prop(s, "enable_lensing_sphere")
+        box.prop(s, "impact_factor_rs")
+        box.prop(s, "observer_radius_rs")
+        col = box.column(align=True)
+        col.label(text=f"rs: {rel_props['schwarzschild_radius_m']:.4e} m")
+        col.label(
+            text=f"Deflexão α: {rel_props['deflection_angle_rad']:.4f} rad ({rel_props['deflection_angle_deg']:.2f}°)"
+        )
+        col.label(text=f"Dilatação γ: {rel_props['time_dilation_factor']:.4f}")
+        col.label(text=f"Esfera de fótons: {rel_props['photon_sphere_m']:.4e} m")
+        row = box.row(align=True)
+        row.operator(export_ops.BH_OT_update_relativistic.bl_idname, icon="SHADING_RENDERED")
+        row.operator(export_ops.BH_OT_rebuild_lensing.bl_idname, icon="SPHERE")
 
         box = layout.box()
         box.label(text="Parâmetros")

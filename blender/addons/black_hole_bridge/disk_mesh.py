@@ -76,6 +76,8 @@ def build_disk(
     name: str = C.OBJ_DISK,
     n_radial: int = 48,
     n_angular: int = 128,
+    time_dilation: float = 1.0,
+    deflection_angle: float = 0.0,
 ):
     """Create / replace the accretion disk object with emission material."""
     existing = bpy.data.objects.get(name)
@@ -102,7 +104,11 @@ def build_disk(
     obj = bpy.data.objects.new(name, mesh)
     collection.objects.link(obj)
 
-    mat = materials.ensure_disk_material()
+    mat = materials.ensure_disk_material(
+        rs=rs,
+        time_dilation=time_dilation,
+        deflection_angle=deflection_angle,
+    )
     if mesh.materials:
         mesh.materials[0] = mat
     else:
@@ -114,6 +120,8 @@ def build_disk(
     obj["bh_outer_rs"] = outer_factor
     obj["bh_r_in"] = r_in
     obj["bh_r_out"] = r_out
+    obj["bh_time_dilation"] = float(time_dilation)
+    obj["bh_deflection_angle"] = float(deflection_angle)
     obj["bh_style_note"] = (
         "artistic approximation of geodesic.comp diskColor=vec3(1,r,0.2); "
         "physics/lensing in C++"

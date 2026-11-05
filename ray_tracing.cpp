@@ -6,6 +6,9 @@
 #include <vector>
 #include <iostream>
 #include <cmath>
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
 using namespace glm;
 
 // global vars
@@ -255,6 +258,9 @@ int main(){
         glClear(GL_COLOR_BUFFER_BIT);
 
         // render texture (pxl by pxl)
+#if defined(_OPENMP)
+        #pragma omp parallel for schedule(dynamic, 4)
+#endif
         for(int y = 0; y < HEIGHT; ++y){
             for(int x = 0; x < WIDTH; ++x){
                 float aspectRatio = float(WIDTH) / float(HEIGHT);

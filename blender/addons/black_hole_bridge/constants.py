@@ -70,15 +70,36 @@ COLL_CAMERA = "BH_Camera"
 COLL_LIGHTS = "BH_Lights"
 
 OBJ_HORIZON = "BH_Horizon"
+OBJ_LENSING = "BH_LensingSphere"
 OBJ_DISK = "BH_AccretionDisk"
 OBJ_GRID = "BH_SpacetimeGrid"
 OBJ_CAM_EMPTY = "BH_OrbitPivot"
 OBJ_CAMERA = "BH_OrbitCamera"
 OBJ_KEY_LIGHT = "BH_FillLight"
 
+MAT_HORIZON = "BH_Horizon_Mat"
+MAT_LENSING = "BH_Lensing_Mat"
+MAT_DISK = "BH_Disk_Mat"
+MAT_GRID = "BH_Grid_Mat"
+
+# Relativistic default factors (relative to rs)
+PHOTON_SPHERE_FACTOR = 1.5
+DEFAULT_IMPACT_FACTOR = 10.0
+DEFAULT_OBSERVER_RADIUS_FACTOR = 5.0
+
+
+try:
+    from .relativistic import schwarzschild_radius
+except (ImportError, ValueError):
+    try:
+        from relativistic import schwarzschild_radius
+    except (ImportError, ValueError):
+        def schwarzschild_radius(mass_kg: float) -> float:
+            return 2.0 * G * float(mass_kg) / (C * C)
+
 
 def rs_from_mass(mass_kg: float) -> float:
-    return 2.0 * G * mass_kg / (C * C)
+    return schwarzschild_radius(mass_kg)
 
 
 def camera_position(radius: float, azimuth: float, elevation: float):

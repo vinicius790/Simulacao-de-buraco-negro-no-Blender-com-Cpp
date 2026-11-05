@@ -1,4 +1,5 @@
-#pragma once
+#ifndef INCLUDE_BLACK_HOLE_DISK_MODEL_HPP_
+#define INCLUDE_BLACK_HOLE_DISK_MODEL_HPP_
 // Geometric accretion-disk annulus helpers matching the legacy visual baseline.
 //
 // IMPORTANT — honesty contract:
@@ -69,7 +70,8 @@ inline double color_radial_param(double radius_m, const Annulus& a) {
 }
 
 /// RGB components of the legacy disk colour (alpha is the same r_norm).
-inline void legacy_disk_rgb(double r_norm, double& out_r, double& out_g, double& out_b) {
+inline void legacy_disk_rgb(double r_norm,
+                            double& out_r, double& out_g, double& out_b) {
     out_r = 1.0;
     out_g = r_norm;
     out_b = 0.2;
@@ -77,3 +79,5 @@ inline void legacy_disk_rgb(double r_norm, double& out_r, double& out_g, double&
 
 }  // namespace disk
 }  // namespace bh
+
+#endif  // INCLUDE_BLACK_HOLE_DISK_MODEL_HPP_

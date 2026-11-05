@@ -4,6 +4,7 @@
 #include "black_hole/disk_model.hpp"
 #include "black_hole/integrator_rk4.hpp"
 #include "black_hole/ray_state.hpp"
+#include "black_hole/relativistic.hpp"
 #include "black_hole/scene_params.hpp"
 #include "black_hole/schwarzschild.hpp"
 #include "black_hole/units.hpp"
@@ -13,6 +14,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -198,6 +200,109 @@ void test_scene_params_roundtrip() {
     expect_near(annulus.inner_m, defaults.r_s_m * 2.2, 1.0, "scene_disk_annulus inner");
 }
 
+void test_relativistic_integration() {
+    const double solar_mass_kg = 1.98847e30;
+    const double mass_kg = 10.0 * solar_mass_kg;
+
+    // Schwarzschild radius calculation through relativistic.hpp and units.hpp
+    const double rs_rel = black_hole::schwarzschild_radius(mass_kg);
+    const double rs_units = bh::units::schwarzschild_radius_si(mass_kg);
+    const double rs_sch = bh::schwarzschild_radius_si(mass_kg);
+    const double rs_expected = 2.0 * black_hole::G * mass_kg / (black_hole::c * black_hole::c);
+
+    expect_near(rs_rel, rs_expected, 1e-6, "schwarzschild_radius matches 2GM/c^2");
+    expect_near(rs_units, rs_rel, 1e-12, "units::schwarzschild_radius_si matches relativistic::schwarzschild_radius");
+    expect_near(rs_sch, rs_rel, 1e-12, "schwarzschild::schwarzschild_radius_si matches relativistic::schwarzschild_radius");
+    expect_near(rs_rel, 29.533e3, 10.0, "10 M_sun rs is ~29.53 km");
+
+    // Light deflection angle through relativistic.hpp and weak_field.hpp
+    const double impact_m = 10.0 * rs_rel;
+    const double angle_rel = black_hole::light_deflection_angle(mass_kg, impact_m);
+    const double angle_wf = bh::weak_field::deflection_angle_si(mass_kg, impact_m);
+    const double angle_sch = bh::deflection_angle_si(mass_kg, impact_m);
+    const double angle_expected = 2.0 * rs_rel / impact_m;
+
+    expect_near(angle_rel, angle_expected, 1e-12, "light_deflection_angle matches 2 rs / b");
+    expect_near(angle_wf, angle_rel, 1e-12, "weak_field::deflection_angle_si matches relativistic::light_deflection_angle");
+    expect_near(angle_sch, angle_rel, 1e-12, "schwarzschild::deflection_angle_si matches relativistic::light_deflection_angle");
+
+    const double angle_wf_consts = bh::weak_field::deflection_angle_si(black_hole::G, mass_kg, black_hole::c, impact_m);
+    expect_near(angle_wf_consts, angle_rel, 1e-12, "weak_field with standard G and c delegates to light_deflection_angle");
+
+    // Time dilation through relativistic.hpp and schwarzschild.hpp
+    const double r_obs = 5.0 * rs_rel;
+    const double dilation_rel = black_hole::time_dilation_factor(mass_kg, r_obs);
+    const double dilation_sch = bh::time_dilation_factor_si(mass_kg, r_obs);
+    const double dilation_geom = bh::time_dilation_factor(r_obs, rs_rel);
+    const double dilation_expected = std::sqrt(1.0 - rs_rel / r_obs);
+
+    expect_near(dilation_rel, dilation_expected, 1e-12, "time_dilation_factor matches sqrt(1 - rs/r)");
+    expect_near(dilation_sch, dilation_rel, 1e-12, "schwarzschild::time_dilation_factor_si matches relativistic");
+    expect_near(dilation_geom, dilation_expected, 1e-12, "schwarzschild::time_dilation_factor matches sqrt(1 - rs/r)");
+
+    // Boundary conditions
+    expect_near(black_hole::time_dilation_factor(mass_kg, rs_rel), 0.0, 0.0, "time dilation at horizon is 0");
+    expect_near(black_hole::time_dilation_factor(mass_kg, 0.5 * rs_rel), 0.0, 0.0, "time dilation inside horizon is 0");
+    expect_near(bh::time_dilation_factor(rs_rel, rs_rel), 0.0, 0.0, "bh::time_dilation_factor at horizon is 0");
+    expect_near(bh::time_dilation_factor(0.5 * rs_rel, rs_rel), 0.0, 0.0, "bh::time_dilation_factor inside horizon is 0");
+}
+
+void test_batch_rk4_openmp() {
+    const double rs = 1.0;
+    const double d_lambda = 0.1;
+    const std::size_t num_rays = 16;
+
+    std::vector<bh::RayState> single_rays;
+    single_rays.reserve(num_rays);
+    for (std::size_t i = 0; i < num_rays; ++i) {
+        const double r0 = 10.0 * rs + static_cast<double>(i) * 2.0;
+        const double dx = -0.5 - 0.02 * static_cast<double>(i);
+        const double dy = 0.3 + 0.01 * static_cast<double>(i);
+        const double dz = 0.1;
+        single_rays.push_back(bh::make_ray_from_cartesian(r0, 0.0, 0.0, dx, dy, dz, rs));
+    }
+
+    std::vector<bh::RayState> batch_rays = single_rays;
+
+    // Step sequentially vs batch OpenMP
+    for (std::size_t i = 0; i < num_rays; ++i) {
+        bh::rk4_step(single_rays[i], d_lambda, rs);
+    }
+    bh::rk4_step_batch(batch_rays.data(), batch_rays.size(), d_lambda, rs);
+
+    bool all_match = true;
+    for (std::size_t i = 0; i < num_rays; ++i) {
+        if (std::abs(single_rays[i].r - batch_rays[i].r) > 1e-12 ||
+            std::abs(single_rays[i].theta - batch_rays[i].theta) > 1e-12 ||
+            std::abs(single_rays[i].phi - batch_rays[i].phi) > 1e-12 ||
+            std::abs(single_rays[i].dr - batch_rays[i].dr) > 1e-12 ||
+            std::abs(single_rays[i].dtheta - batch_rays[i].dtheta) > 1e-12 ||
+            std::abs(single_rays[i].dphi - batch_rays[i].dphi) > 1e-12) {
+            all_match = false;
+            break;
+        }
+    }
+    expect(all_match, "rk4_step_batch yields identical values to single rk4_step");
+
+    // Test integrate_rays_rk4 termination conditions
+    std::vector<bh::RayState> test_rays;
+    // 1) Ray aiming directly inward close to horizon (should be captured)
+    test_rays.push_back(bh::make_ray_from_cartesian(1.5 * rs, 0.0, 0.0, -1.0, 0.0, 0.0, rs));
+    // 2) Ray aiming directly outward (should escape)
+    test_rays.push_back(bh::make_ray_from_cartesian(95.0 * rs, 0.0, 0.0, 1.0, 0.0, 0.0, rs));
+
+    std::vector<bh::BatchRayResult> results(test_rays.size());
+    bh::integrate_rays_rk4(test_rays.data(), test_rays.size(), 0.1, rs, 100, 100.0 * rs, results.data());
+
+    expect(results[0].captured, "inward ray captured by horizon in integrate_rays_rk4");
+    expect(!results[0].escaped, "inward ray not escaped");
+    expect(results[0].steps_taken > 0, "inward ray recorded steps");
+
+    expect(results[1].escaped, "outward ray escaped in integrate_rays_rk4");
+    expect(!results[1].captured, "outward ray not captured");
+    expect(results[1].steps_taken > 0, "outward ray recorded steps");
+}
+
 }  // namespace
 
 int main() {
@@ -210,6 +315,8 @@ int main() {
     test_disk_factors_legacy();
     test_camera_orbit_parity();
     test_scene_params_roundtrip();
+    test_relativistic_integration();
+    test_batch_rk4_openmp();
 
     if (g_failures != 0) {
         std::cerr << g_failures << " failure(s)\n";

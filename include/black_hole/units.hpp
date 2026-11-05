@@ -1,17 +1,20 @@
-#pragma once
+#ifndef INCLUDE_BLACK_HOLE_UNITS_HPP_
+#define INCLUDE_BLACK_HOLE_UNITS_HPP_
 // Geometric-unit helpers for Schwarzschild reference work (G = c = 1).
-// SI mapping uses the Sagittarius A* mass adopted by the legacy visual baseline.
+// SI mapping uses Sagittarius A* mass adopted by legacy visual baseline.
 
 #include <cmath>
+
+#include "black_hole/relativistic.hpp"
 
 namespace bh {
 namespace units {
 
-/// Newtonian gravitational constant (CODATA-style value used by the legacy code).
-inline constexpr double G_SI = 6.67430e-11;  // m^3 kg^-1 s^-2
+/// Newtonian gravitational constant (value used by the legacy code).
+inline constexpr double G_SI = black_hole::G;  // m^3 kg^-1 s^-2
 
 /// Speed of light in vacuum (exact SI definition).
-inline constexpr double C_SI = 299792458.0;  // m/s
+inline constexpr double C_SI = black_hole::c;  // m/s
 
 /// Sagittarius A* mass used by CPU-geodesic.cpp / the visual baseline.
 inline constexpr double SAGITTARIUS_A_MASS_KG = 8.54e36;
@@ -22,8 +25,9 @@ inline constexpr double SAGITTARIUS_A_MASS_KG = 8.54e36;
 inline constexpr double LEGACY_SAGA_RS_M = 1.269e10;
 
 /// Schwarzschild radius rs = 2 G M / c^2 for a given mass (SI metres).
+/// Replaces manual formula with black_hole::schwarzschild_radius.
 inline constexpr double schwarzschild_radius_si(double mass_kg) {
-    return 2.0 * G_SI * mass_kg / (C_SI * C_SI);
+    return black_hole::schwarzschild_radius(mass_kg);
 }
 
 /// Legacy Sag A* rs used in geodesic.comp (≈ 1.269e10 m).
@@ -56,3 +60,5 @@ inline constexpr double seconds_from_M(double value_in_M, double rs) {
 
 }  // namespace units
 }  // namespace bh
+
+#endif  // INCLUDE_BLACK_HOLE_UNITS_HPP_

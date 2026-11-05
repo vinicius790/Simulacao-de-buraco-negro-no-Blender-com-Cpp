@@ -5,7 +5,9 @@
 #include <cmath>
 #include <fstream>
 #include <sstream>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace bh {
 namespace {
@@ -17,7 +19,7 @@ std::string trim(std::string s) {
     return s;
 }
 
-// Extract the value text for a top-level-ish key occurrence: "key"\s*:\s*<value>
+// Extract value text for a top-level key occurrence: "key"\s*:\s*<value>
 // Value ends at the matching comma / closing brace / bracket at depth 0.
 bool extract_value_after_key(const std::string& text, const std::string& key,
                              std::string& value_out) {
@@ -33,7 +35,8 @@ bool extract_value_after_key(const std::string& text, const std::string& key,
             return false;
         }
         std::size_t i = colon + 1;
-        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) {
+        while (i < text.size() &&
+               std::isspace(static_cast<unsigned char>(text[i]))) {
             ++i;
         }
         if (i >= text.size()) {
@@ -84,7 +87,8 @@ bool parse_double(const std::string& s, double& out) {
     try {
         std::size_t idx = 0;
         out = std::stod(s, &idx);
-        while (idx < s.size() && std::isspace(static_cast<unsigned char>(s[idx]))) {
+        while (idx < s.size() &&
+               std::isspace(static_cast<unsigned char>(s[idx]))) {
             ++idx;
         }
         return idx == s.size();
@@ -294,7 +298,7 @@ void apply_disk(const std::string& body, SceneParams& out) {
             out.disk_num = d;
         }
     }
-    // Absolute radii are accepted but factors take precedence when both present;
+    // Absolute radii accepted, but factors take precedence when both present;
     // if only absolute radii are present, derive factors from r_s_m.
     double inner_m = -1.0, outer_m = -1.0;
     if (extract_value_after_key(body, "inner_radius_m", v)) {
@@ -431,7 +435,9 @@ SceneParams make_default_scene_params() {
     return p;
 }
 
-bool scene_params_from_json(const std::string& json_text, SceneParams& out, std::string& err) {
+bool scene_params_from_json(const std::string& json_text,
+                            SceneParams& out,
+                            std::string& err) {
     SceneParams tmp = make_default_scene_params();
     // Keep default objects only if the JSON does not supply an objects array.
     bool has_objects = false;
@@ -480,7 +486,8 @@ bool scene_params_from_json(const std::string& json_text, SceneParams& out, std:
         err = "invalid camera.radius_m";
         return false;
     }
-    if (!(tmp.disk_inner_factor_rs > 0.0 && tmp.disk_outer_factor_rs > tmp.disk_inner_factor_rs)) {
+    if (!(tmp.disk_inner_factor_rs > 0.0 &&
+          tmp.disk_outer_factor_rs > tmp.disk_inner_factor_rs)) {
         err = "invalid disk factors";
         return false;
     }
@@ -510,15 +517,20 @@ std::string scene_params_to_json(const SceneParams& in) {
        << format_double(in.r_s_m * in.disk_inner_factor_rs) << ",\n";
     os << "    \"outer_radius_m\": "
        << format_double(in.r_s_m * in.disk_outer_factor_rs) << ",\n";
-    os << "    \"inner_factor_rs\": " << format_double(in.disk_inner_factor_rs) << ",\n";
-    os << "    \"outer_factor_rs\": " << format_double(in.disk_outer_factor_rs) << ",\n";
-    os << "    \"thickness_m\": " << format_double(in.disk_thickness_m) << ",\n";
+    os << "    \"inner_factor_rs\": "
+       << format_double(in.disk_inner_factor_rs) << ",\n";
+    os << "    \"outer_factor_rs\": "
+       << format_double(in.disk_outer_factor_rs) << ",\n";
+    os << "    \"thickness_m\": "
+       << format_double(in.disk_thickness_m) << ",\n";
     os << "    \"disk_num\": " << format_double(in.disk_num) << "\n";
     os << "  },\n";
     os << "  \"camera\": {\n";
     os << "    \"radius_m\": " << format_double(in.camera.radius_m) << ",\n";
-    os << "    \"azimuth_rad\": " << format_double(in.camera.azimuth_rad) << ",\n";
-    os << "    \"elevation_rad\": " << format_double(in.camera.elevation_rad) << ",\n";
+    os << "    \"azimuth_rad\": "
+       << format_double(in.camera.azimuth_rad) << ",\n";
+    os << "    \"elevation_rad\": "
+       << format_double(in.camera.elevation_rad) << ",\n";
     os << "    \"fov_y_deg\": " << format_double(in.camera.fov_y_deg) << ",\n";
     os << "    \"target_m\": [" << format_double(in.camera.target_x) << ", "
        << format_double(in.camera.target_y) << ", "
@@ -532,7 +544,8 @@ std::string scene_params_to_json(const SceneParams& in) {
            << format_double(o.pos_m[1]) << ", " << format_double(o.pos_m[2])
            << "],\n";
         os << "      \"radius_m\": " << format_double(o.radius_m) << ",\n";
-        os << "      \"color_rgba\": [" << format_double(o.color_rgba[0]) << ", "
+        os << "      \"color_rgba\": ["
+           << format_double(o.color_rgba[0]) << ", "
            << format_double(o.color_rgba[1]) << ", "
            << format_double(o.color_rgba[2]) << ", "
            << format_double(o.color_rgba[3]) << "],\n";
@@ -542,7 +555,8 @@ std::string scene_params_to_json(const SceneParams& in) {
     os << "  ],\n";
     os << "  \"render_baseline\": {\n";
     os << "    \"window\": [" << in.window_w << ", " << in.window_h << "],\n";
-    os << "    \"compute\": [" << in.compute_w << ", " << in.compute_h << "],\n";
+    os << "    \"compute\": [" << in.compute_w << ", "
+       << in.compute_h << "],\n";
     os << "    \"integrator\": \"" << escape_string(in.integrator) << "\",\n";
     os << "    \"scientific_default\": "
        << (in.scientific_default ? "true" : "false") << "\n";
@@ -551,7 +565,9 @@ std::string scene_params_to_json(const SceneParams& in) {
     return os.str();
 }
 
-bool load_scene_params_json(const std::string& path, SceneParams& out, std::string& err) {
+bool load_scene_params_json(const std::string& path,
+                            SceneParams& out,
+                            std::string& err) {
     std::ifstream in(path);
     if (!in) {
         err = "cannot open: " + path;
@@ -562,7 +578,9 @@ bool load_scene_params_json(const std::string& path, SceneParams& out, std::stri
     return scene_params_from_json(ss.str(), out, err);
 }
 
-bool save_scene_params_json(const std::string& path, const SceneParams& in, std::string& err) {
+bool save_scene_params_json(const std::string& path,
+                            const SceneParams& in,
+                            std::string& err) {
     std::ofstream out(path);
     if (!out) {
         err = "cannot write: " + path;

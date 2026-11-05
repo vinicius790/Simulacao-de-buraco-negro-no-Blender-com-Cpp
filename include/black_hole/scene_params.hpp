@@ -1,10 +1,12 @@
-#pragma once
+#ifndef INCLUDE_BLACK_HOLE_SCENE_PARAMS_HPP_
+#define INCLUDE_BLACK_HOLE_SCENE_PARAMS_HPP_
 // Scene-parameter JSON I/O for the black_hole package (additive; not wired into
 // the default black_hole.cpp render loop).
 //
 // Schema: black_hole.scene_params/v1  (jq-friendly, flat-enough nesting).
 // Parser: hand-rolled / nlohmann-free — only the RESTRICTED key set below.
-// See examples/scene_params_example.json and blender/examples/scene_params_example.json.
+// See examples/scene_params_example.json and
+// blender/examples/scene_params_example.json.
 //
 // Loaded fields:
 //   camera.radius_m / azimuth_rad / elevation_rad / fov_y_deg / target_m[3]
@@ -14,14 +16,14 @@
 //
 // Unknown keys are ignored. Missing keys keep SceneParams defaults (legacy).
 
-#include "black_hole/camera_model.hpp"
-#include "black_hole/disk_model.hpp"
-#include "black_hole/units.hpp"
-
 #include <array>
 #include <cstddef>
 #include <string>
 #include <vector>
+
+#include "black_hole/camera_model.hpp"
+#include "black_hole/disk_model.hpp"
+#include "black_hole/units.hpp"
 
 namespace bh {
 
@@ -60,7 +62,7 @@ struct SceneParams {
     // Optional scene objects (up to SCENE_MAX_OBJECTS).
     std::vector<SceneObject> objects;
 
-    // Render baseline metadata (informational; not applied by the GL binary yet).
+    // Render baseline metadata (informational; not applied by the GL binary).
     int window_w = 800;
     int window_h = 600;
     int compute_w = 200;
@@ -74,21 +76,31 @@ SceneParams make_default_scene_params();
 
 /// Load from a UTF-8 JSON file. Returns false on I/O or parse failure;
 /// `err` receives a short message. On failure `out` is left unchanged.
-bool load_scene_params_json(const std::string& path, SceneParams& out, std::string& err);
+bool load_scene_params_json(const std::string& path,
+                            SceneParams& out,
+                            std::string& err);
 
 /// Save SceneParams as pretty-printed restricted-schema JSON.
-bool save_scene_params_json(const std::string& path, const SceneParams& in, std::string& err);
+bool save_scene_params_json(const std::string& path,
+                            const SceneParams& in,
+                            std::string& err);
 
 /// Serialize to a JSON string (pretty).
 std::string scene_params_to_json(const SceneParams& in);
 
 /// Parse from a JSON string. Same contract as load_scene_params_json.
-bool scene_params_from_json(const std::string& json_text, SceneParams& out, std::string& err);
+bool scene_params_from_json(const std::string& json_text,
+                            SceneParams& out,
+                            std::string& err);
 
 /// Derived geometric annulus for the current disk factors / rs.
 inline disk::Annulus scene_disk_annulus(const SceneParams& p) {
-    return disk::legacy_annulus(p.r_s_m, p.disk_inner_factor_rs, p.disk_outer_factor_rs,
+    return disk::legacy_annulus(p.r_s_m,
+                                p.disk_inner_factor_rs,
+                                p.disk_outer_factor_rs,
                                 p.disk_thickness_m);
 }
 
 }  // namespace bh
+
+#endif  // INCLUDE_BLACK_HOLE_SCENE_PARAMS_HPP_

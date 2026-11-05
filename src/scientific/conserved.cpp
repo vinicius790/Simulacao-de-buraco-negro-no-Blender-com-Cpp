@@ -12,7 +12,8 @@ double energy_from_null_condition(const RayState& ray, double rs) {
     // NOTE: geodesic.comp / CPU-geodesic.cpp historically use
     //   E_legacy = f * sqrt( (dr)^2/f + r^2 (...) )
     // which does NOT satisfy the continuous null condition. Scientific mode
-    // deliberately uses the corrected definition; the GPU baseline is unchanged.
+    // deliberately uses the corrected definition; the GPU baseline is
+    // unchanged.
     const double f = lapse_factor(ray.r, rs);
     if (f <= 0.0) {
         return 0.0;

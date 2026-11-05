@@ -19,8 +19,10 @@ def build_horizon(
     name: str = C.OBJ_HORIZON,
     segments: int = 64,
     rings: int = 32,
+    time_dilation: float = 0.0,
+    deflection_angle: float = 0.0,
 ):
-    """Create / replace a UV sphere of radius ``rs`` with black material."""
+    """Create / replace a UV sphere of radius ``rs`` with black material exposing relativistic params."""
     # Remove existing
     existing = bpy.data.objects.get(name)
     if existing is not None:
@@ -44,7 +46,11 @@ def build_horizon(
     bm.free()
     mesh.update()
 
-    mat = materials.ensure_horizon_material()
+    mat = materials.ensure_horizon_material(
+        rs=rs,
+        time_dilation=time_dilation,
+        deflection_angle=deflection_angle,
+    )
     if mesh.materials:
         mesh.materials[0] = mat
     else:
@@ -52,5 +58,7 @@ def build_horizon(
 
     obj.location = (0.0, 0.0, 0.0)
     obj["bh_rs"] = rs
+    obj["bh_time_dilation"] = time_dilation
+    obj["bh_deflection_angle"] = deflection_angle
     obj["bh_role"] = "horizon"
     return obj

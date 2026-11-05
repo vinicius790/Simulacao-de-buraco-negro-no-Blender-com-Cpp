@@ -13,8 +13,17 @@ C = 299792458.0
 DEFAULT_MASS = 8.54e36
 
 
+try:
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addons"))
+    from black_hole_bridge.relativistic import schwarzschild_radius
+except (ImportError, ValueError):
+    def schwarzschild_radius(mass_kg: float) -> float:
+        return 2.0 * G * mass_kg / (C * C)
+
+
 def rs_from_mass(mass_kg: float) -> float:
-    return 2.0 * G * mass_kg / (C * C)
+    return schwarzschild_radius(mass_kg)
 
 
 def build_params(

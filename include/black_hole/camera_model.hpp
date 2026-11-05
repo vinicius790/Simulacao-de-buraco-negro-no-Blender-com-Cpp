@@ -1,4 +1,5 @@
-#pragma once
+#ifndef INCLUDE_BLACK_HOLE_CAMERA_MODEL_HPP_
+#define INCLUDE_BLACK_HOLE_CAMERA_MODEL_HPP_
 // Orbit-camera math mirroring black_hole.cpp::Camera (tests / Blender parity).
 //
 // Convention (legacy visual baseline):
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace bh {
 namespace camera {
@@ -83,7 +85,8 @@ inline double tan_half_fov(const OrbitCamera& cam) {
     return std::tan(half);
 }
 
-/// Forward unit vector from camera position toward target (legacy: always origin).
+/// Forward unit vector from camera position toward target
+/// (legacy: always origin).
 inline void forward(const OrbitCamera& cam,
                     double& out_x, double& out_y, double& out_z) {
     double px, py, pz;
@@ -115,3 +118,5 @@ inline double grid_warp_delta_y(double dist, double rs) {
 
 }  // namespace camera
 }  // namespace bh
+
+#endif  // INCLUDE_BLACK_HOLE_CAMERA_MODEL_HPP_

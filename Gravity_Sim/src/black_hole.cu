@@ -6,6 +6,9 @@
 #include <vector>
 #include <iostream>
 #include <cmath>
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <device_launch_parameters.h>
@@ -394,6 +397,9 @@ int main(){
         std::vector<unsigned char> pixels(rWidth * rHeight * 3);
 
         // render texture (pxl by pxl)
+#if defined(_OPENMP)
+        #pragma omp parallel for schedule(dynamic, 4)
+#endif
         for(int y = 0; y < rHeight; ++y){
             for(int x = 0; x < rWidth; ++x){
                 float scale = tan(radians(camera.fov * 0.5f));

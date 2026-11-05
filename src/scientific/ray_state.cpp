@@ -1,7 +1,8 @@
 #include "black_hole/ray_state.hpp"
-#include "black_hole/conserved.hpp"
 
 #include <cmath>
+
+#include "black_hole/conserved.hpp"
 
 namespace bh {
 

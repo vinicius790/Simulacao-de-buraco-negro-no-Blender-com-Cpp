@@ -94,13 +94,65 @@ LMK if you would like an in-depth explanation of how the code works aswell :)
 | Area | Location | Notes |
 |------|----------|-------|
 | Default visual baseline | `black_hole.cpp` + `geodesic.comp` | Historical **Euler** integrator |
-| Scientific CPU library | `include/black_hole/`, `src/scientific/` | RK4 + diagnostics, no GL |
-| Tests | `tests/` | Invariants + `test_scientific_ref` |
-| Docs | `docs/INDEX.md` | Full map (PT/EN) |
+| Scientific CPU library | `include/black_hole/`, `src/scientific/` | RK4 + diagnostics, SI `relativistic.hpp`, no GL |
+| Tests | `tests/` | Invariants + `test_scientific_ref` + `test_relativistic` |
+| Docs | `docs/INDEX.md`, `docs/RELATIVISTIC.md` | Full map (PT/EN) & relativistic guide |
 | Blender bridge | `blender/` | Optional frontend only |
 | Legacy archive | `Gravity_Sim/` | Kept; not in root CMake |
 
 Kerr / spin is **not** implemented. Do not treat GPU timings or experimental measurements as part of this tree unless you add and validate them yourself.
+
+## Relativistic Utilities & New Features
+
+The scientific reference core now includes header-only relativistic astrophysics utilities in SI units:
+
+- **Header:** [`include/black_hole/relativistic.hpp`](include/black_hole/relativistic.hpp)
+- **Documentation:** [`docs/RELATIVISTIC.md`](docs/RELATIVISTIC.md)
+- **Capabilities:**
+  - `schwarzschild_radius(mass_kg)`: Computes the event horizon radius $r_s = \frac{2GM}{c^2}$ for any given mass in kg.
+  - `light_deflection_angle(mass_kg, impact_m)`: Computes the gravitational light deflection angle $\delta = \frac{4GM}{c^2 b} = \frac{2 r_s}{b}$ in radians for impact parameter $b \gg r_s$.
+  - `time_dilation_factor(mass_kg, radius_m)`: Computes the gravitational time dilation factor $\gamma = \frac{\mathrm{d}\tau}{\mathrm{d}t} = \sqrt{1 - \frac{r_s}{r}}$ for a stationary observer outside the horizon ($r > r_s$), safely returning `0.0` at or inside the horizon.
+- **Unit Tests:** [`tests/test_relativistic.cpp`](tests/test_relativistic.cpp) (built with GoogleTest).
+
+## Running Tests with CTest
+
+All regression guards, scientific verification, and relativistic unit tests are integrated with CMake and CTest.
+
+### 1. Build the test suite (scientific headless)
+
+```bash
+cmake -S . -B build/scientific -DBLACK_HOLE_BUILD_GL=OFF -DBUILD_TESTING=ON
+cmake --build build/scientific
+```
+
+### 2. Run all tests with CTest
+
+```bash
+# Run all registered tests with failure diagnostics
+ctest --test-dir build/scientific --output-on-failure
+
+# Or using CMake presets (Linux / Ninja):
+ctest --preset scientific
+```
+
+### 3. Run individual test suites
+
+You can filter specific tests using CTest's `-R <regex>` flag:
+
+```bash
+# Run only the new relativistic unit tests
+ctest --test-dir build/scientific -R test_relativistic --output-on-failure
+
+# Run the scientific reference library tests (photon sphere, ISCO, RK4 drift)
+ctest --test-dir build/scientific -R scientific_ref --output-on-failure
+
+# Run the static regression guards (invariants and visual bible style contract)
+ctest --test-dir build/scientific -R "source_invariants|style_contract" --output-on-failure
+```
+
+> **Note for Multi-Configuration Generators (Visual Studio / Xcode):**
+> Specify the configuration when invoking CTest, e.g.:
+> `ctest --test-dir build/scientific -C Release --output-on-failure`
 
 ## Engineering baseline upgrade
 

@@ -20,6 +20,7 @@ Mapa do repositório após o upgrade de engenharia **e** a expansão científica
 | [ENGINEERING_UPGRADE.md](ENGINEERING_UPGRADE.md) | Correções/otimizações sem mudar o modelo numérico default |
 | [SCIENTIFIC_MODE_SPEC.md](SCIENTIFIC_MODE_SPEC.md) | Spec do modo científico (separado do default) |
 | [COMPARATIVO_BASELINE_VS_CIENTIFICO.md](COMPARATIVO_BASELINE_VS_CIENTIFICO.md) | Tabela baseline vs. científico |
+| [RELATIVISTIC.md](RELATIVISTIC.md) | Utilidades relativísticas SI (`rs`, deflexão, dilatação) e testes |
 | [FISICA_SCHWARZSCHILD.md](FISICA_SCHWARZSCHILD.md) | O que a física modela / não modela (se presente) |
 | [BRIEF_REVISAO_CIENTIFICA.md](BRIEF_REVISAO_CIENTIFICA.md) | Brief de revisão científica (se presente) |
 | [ARQUITETURA.md](ARQUITETURA.md) | Pipeline do engine (se presente) |
@@ -41,10 +42,11 @@ Mapa do repositório após o upgrade de engenharia **e** a expansão científica
 
 | Caminho | Papel |
 |---------|--------|
-| [`../include/black_hole/`](../include/black_hole/) | Headers da API científica |
+| [`../include/black_hole/`](../include/black_hole/) | Headers da API científica (inclui `relativistic.hpp`) |
 | [`../src/scientific/`](../src/scientific/) | Schwarzschild / RK4 / conserved / ray_state |
 | [`../shaders/geodesic_scientific.comp`](../shaders/geodesic_scientific.comp) | Shader **separado** de `geodesic.comp` |
 | [`../tests/test_scientific_ref.cpp`](../tests/test_scientific_ref.cpp) | Testes headless (photon sphere, drift, …) |
+| [`../tests/test_relativistic.cpp`](../tests/test_relativistic.cpp) | Testes unitários GoogleTest das rotinas relativísticas |
 | [`../examples/`](../examples/) | Quickstarts científicos |
 | CMake `bh_scientific` / `BLACK_HOLE_BUILD_GL` | Lib sem GL; GL continua opcional |
 
